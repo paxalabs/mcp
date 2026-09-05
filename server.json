@@ -1,0 +1,47 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.paxalabs/mcp",
+  "title": "Paxa Labs",
+  "description": "Thai and English speech AI: text to speech with local playback, translation to Thai, and OCR",
+  "websiteUrl": "https://paxalabs.com/docs",
+  "repository": {
+    "url": "https://github.com/paxalabs/mcp",
+    "source": "github"
+  },
+  "version": "0.1.0-beta.2",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@paxalabs/mcp",
+      "version": "0.1.0-beta.2",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "PAXA_API_KEY",
+          "description": "Paxa Labs API key, created at https://paxalabs.com/app/keys",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "PAXA_OUTPUT_DIR",
+          "description": "Directory where text_to_speech saves files (default: the working directory)",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "PAXA_DEFAULT_VOICE",
+          "description": "Voice id used when a call does not pick one (default: nomyen)",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}
