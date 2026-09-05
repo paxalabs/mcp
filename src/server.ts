@@ -1,4 +1,5 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { dirname, extname, isAbsolute, join, resolve } from "node:path";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -18,6 +19,9 @@ import { MISSING_KEY_MESSAGE, type Config } from "./config.js";
 import { SpeechEngine } from "./queue.js";
 
 const TTS_CREDITS_PER_1K = 15;
+
+/** Single source of truth for the version the server reports: package.json. */
+const PACKAGE_VERSION = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
 
 const AUDIO_EXTENSIONS = new Set([".mp3", ".wav", ".opus", ".ogg", ".flac", ".m4a", ".aac", ".aiff", ".caf"]);
 const OCR_EXTENSIONS = new Set([".pdf", ".png", ".jpg", ".jpeg", ".webp"]);
@@ -47,7 +51,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
     : ` WARNING: ${MISSING_KEY_MESSAGE} Until then every tool that calls the API fails with ` +
       "that message; control_playback and play_audio still work.";
   const server = new McpServer(
-    { name: "paxalabs", version: "0.1.0" },
+    { name: "paxalabs", version: PACKAGE_VERSION },
     {
       instructions:
         "Paxa Labs API server (Thai and English speech AI). speak plays a short line out loud on " +

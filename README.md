@@ -9,6 +9,10 @@ speakers, read long content aloud as a managed playback queue, save speech to
 audio files, translate any language into Thai, and read PDFs and images with
 OCR.
 
+> **Beta.** The tool set is complete and tested end to end, but tool names and
+> behavior may still change before 1.0 as feedback comes in. Report problems at
+> https://github.com/paxalabs/mcp/issues.
+
 ## Quick start
 
 You need a Paxa API key from [paxalabs.com](https://paxalabs.com). New
