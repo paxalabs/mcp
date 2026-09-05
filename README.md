@@ -45,11 +45,11 @@ Add to your client's MCP configuration (for Claude Desktop:
 | --- | --- | --- |
 | `speak` | Synthesize a short line and play it through the speakers, blocking until done | 15 per 1000 chars |
 | `queue_speech` | Read long content aloud: auto-chunks, synthesizes ahead while playing, returns immediately | 15 per 1000 chars |
-| `playback` | Control the shared audio queue: `status`, `pause`, `resume`, `skip`, `clear` | free |
+| `control_playback` | Control the shared audio queue: `status`, `pause`, `resume`, `skip`, `clear` | free |
 | `play_audio` | Play a local audio file through the speakers | free |
 | `text_to_speech` | Synthesize speech to an audio file (mp3, opus, wav) without playing it | 15 per 1000 chars |
 | `translate_to_thai` | Translate any language into Thai, with formality, glossary, and context controls | 25 per 1000 chars |
-| `read_document` | OCR a local PDF, PNG, JPEG, or WebP into Markdown or structured blocks | 6.5 per page |
+| `ocr_document` | OCR a local PDF, PNG, JPEG, or WebP into Markdown or structured blocks | 6.5 per page |
 | `list_voices` | The TTS voice roster with character notes | free |
 | `list_models` | Available models, limits, and pricing | free |
 | `get_account` | Credit balance, plan, and rate limits | free |
@@ -63,7 +63,7 @@ current one plays.
 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
-| `PAXA_API_KEY` | yes | | Your API key |
+| `PAXA_API_KEY` | yes | | Your API key. The server starts without it, but every tool that calls the API then fails with setup instructions the agent can relay |
 | `PAXA_OUTPUT_DIR` | no | working directory | Where `text_to_speech` saves files |
 | `PAXA_DEFAULT_VOICE` | no | `nomyen` | Voice used when a tool call does not pick one |
 | `PAXA_BASE_URL` | no | `https://api.paxalabs.com` | API origin override |

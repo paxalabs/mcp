@@ -2,18 +2,13 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 import { PaxaClient } from "./api.js";
-import { loadConfig, type Config } from "./config.js";
+import { MISSING_KEY_MESSAGE, loadConfig } from "./config.js";
 import { SpeechEngine } from "./queue.js";
 import { createServer } from "./server.js";
 
 async function main(): Promise<void> {
-  let config: Config;
-  try {
-    config = loadConfig();
-  } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
-    process.exit(1);
-  }
+  const config = loadConfig();
+  if (!config.apiKey) console.error(`Warning: ${MISSING_KEY_MESSAGE}`);
 
   const client = new PaxaClient(config.baseUrl, config.apiKey);
   const engine = new SpeechEngine((text, voice, format) => client.tts({ text, voice, format }));

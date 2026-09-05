@@ -51,19 +51,19 @@ await call("speak", { text: "สวัสดีค่ะ ระบบเสี�
 // Queue two segments, exercise status, pause, resume, skip
 await call("queue_speech", { text: "โมเดลเสียงของเราพูดภาษาไทยได้อย่างเป็นธรรมชาติ เหมาะสำหรับการอ่านหนังสือเสียง" });
 await call("queue_speech", { text: "And it reads English just as comfortably, switching between languages without missing a beat." });
-await call("playback", { action: "status" });
+await call("control_playback", { action: "status" });
 await new Promise((r) => setTimeout(r, 2500));
-await call("playback", { action: "pause" });
-await call("playback", { action: "status" });
+await call("control_playback", { action: "pause" });
+await call("control_playback", { action: "status" });
 await new Promise((r) => setTimeout(r, 1500));
-await call("playback", { action: "resume" });
+await call("control_playback", { action: "resume" });
 await new Promise((r) => setTimeout(r, 1500));
-await call("playback", { action: "skip" });
+await call("control_playback", { action: "skip" });
 
 // Wait for the queue to drain
 for (let i = 0; i < 40; i++) {
   await new Promise((r) => setTimeout(r, 1500));
-  const { body } = await call("playback", { action: "status" });
+  const { body } = await call("control_playback", { action: "status" });
   if (body.includes('"state": "idle"')) break;
 }
 
@@ -79,12 +79,12 @@ await call("translate_to_thai", {
 
 // OCR (set TEST_OCR_FILE to a local PDF or image; costs 6.5 credits per page)
 if (process.env.TEST_OCR_FILE) {
-  await call("read_document", { file_path: process.env.TEST_OCR_FILE }, 300_000);
+  await call("ocr_document", { file_path: process.env.TEST_OCR_FILE }, 300_000);
 }
 
 // Error paths: bad voice, missing file
 await call("speak", { text: "test", voice: "not-a-real-voice" });
-await call("read_document", { file_path: "/tmp/does-not-exist.pdf" });
+await call("ocr_document", { file_path: "/tmp/does-not-exist.pdf" });
 
 await call("get_account", {});
 await client.close();

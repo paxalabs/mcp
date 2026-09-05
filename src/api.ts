@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 
+import { MISSING_KEY_MESSAGE } from "./config.js";
+
 export const TTS_MODEL = "paxa-tts-flash-v1";
 export const TRANSLATE_MODEL = "paxa-translation-lite-v1";
 export const OCR_MODEL = "paxa-ocr-lite-v1";
@@ -15,6 +17,60 @@ const RETRYABLE_CODES = new Set([
   "idempotency_in_flight",
   "internal",
 ]);
+
+const KEYS_URL = "https://paxalabs.com/app/keys";
+
+/** What the agent should do, or tell the user, for each stable error code from the API. */
+const HINTS: Record<string, string> = {
+  unauthorized:
+    "The API key was rejected (missing, invalid, or disabled). Ask the user to check PAXA_API_KEY " +
+    `in their MCP client config (keys are managed at ${KEYS_URL}) and restart the server.`,
+  insufficient_credits:
+    "The account is out of credits; nothing was charged. Ask the user to top up or upgrade at " +
+    "https://paxalabs.com, then retry.",
+  key_limit:
+    "This API key reached its spending cap; nothing was charged. Ask the user to raise or remove " +
+    `the cap at ${KEYS_URL}, or configure another key.`,
+  rate_limited:
+    "Requests per minute for the plan are exhausted (one window across the whole account). " +
+    "Wait a minute and retry, or the user can upgrade the plan.",
+  concurrency_limited: "Too many requests in flight on this account. Wait for one to finish, then retry.",
+  unknown_voice: "Pick a voice id from list_voices.",
+  text_too_long: "Split the text into shorter requests.",
+  request_too_large:
+    "Shorten the text, context, instructions, or glossary; every field counts toward the request ceiling.",
+  unspeakable_text:
+    "The text contains no Thai or English words to voice (only emoji, punctuation, or an " +
+    "unsupported script); the charge was refunded. Retrying the same text fails again.",
+  content_blocked:
+    "The safety system declined this content; the charge was refunded. Revise the input, " +
+    "retrying the same content fails again. If the block looks wrong, contact support with the request id.",
+  document_invalid: "The file could not be read as a PDF, PNG, JPEG, or WebP; nothing was charged.",
+  document_password_required:
+    "The PDF needs a password to open; nothing was charged. Use a copy that opens without a password.",
+  too_many_pages: "The document has more pages than the model accepts (50); nothing was charged. Split it.",
+  document_too_large: "The document exceeds the size limit (10 MiB); nothing was charged. Compress or split it.",
+  provider_error: "The upstream model failed; the charge was refunded. Retry.",
+  provider_unavailable: "The model is unavailable right now; nothing was charged. Retry later.",
+  internal: "Retry. If it keeps failing, report the request id to Paxa support.",
+};
+
+/** Fallback when the body carried no code (for example a proxy error page). */
+const STATUS_FALLBACK: Record<number, string> = {
+  401: "unauthorized",
+  402: "insufficient_credits",
+  403: "key_limit",
+  429: "rate_limited",
+};
+
+function hintFor(code: string, status: number): string | undefined {
+  const byCode = HINTS[code];
+  if (byCode) return byCode;
+  const fallback = STATUS_FALLBACK[status];
+  if (fallback) return HINTS[fallback];
+  if (status >= 500) return "Retry later. If it keeps failing, report the request id to Paxa support.";
+  return undefined;
+}
 
 export class PaxaApiError extends Error {
   constructor(
@@ -34,7 +90,10 @@ export class PaxaApiError extends Error {
     let out = `Paxa API error "${this.code}" (HTTP ${this.status})`;
     if (this.message !== this.code) out += `: ${this.message}`;
     if (this.requestId) out += ` [request id ${this.requestId}]`;
-    if (this.retryable) out += ". This error is retryable.";
+    out += ".";
+    const hint = hintFor(this.code, this.status);
+    if (hint) out += ` ${hint}`;
+    else if (this.retryable) out += " This error is retryable.";
     return out;
   }
 }
@@ -135,13 +194,14 @@ export interface AccountInfo {
 export class PaxaClient {
   constructor(
     private readonly baseUrl: string,
-    private readonly apiKey: string,
+    private readonly apiKey: string | undefined,
   ) {}
 
   private async request(
     path: string,
     init: { method?: string; body?: unknown; idempotent?: boolean; timeoutMs?: number } = {},
   ): Promise<Response> {
+    if (!this.apiKey) throw new Error(MISSING_KEY_MESSAGE);
     const headers: Record<string, string> = {
       authorization: `Bearer ${this.apiKey}`,
     };
@@ -158,7 +218,10 @@ export class PaxaClient {
       });
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);
-      throw new Error(`Could not reach the Paxa API at ${this.baseUrl}: ${cause}`);
+      throw new Error(
+        `Could not reach the Paxa API at ${this.baseUrl}: ${cause}. Check this machine's internet ` +
+          "connection, and PAXA_BASE_URL if it is set (the default is https://api.paxalabs.com).",
+      );
     }
 
     if (!res.ok) {
