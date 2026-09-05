@@ -3,28 +3,45 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 interface PlayerSpec {
   command: string;
   args: (file: string) => string[];
+  /** Arguments that make the player read an mp3 stream from stdin, for players that can. */
+  stdinArgs?: string[];
   formats: readonly string[];
 }
 
 const FFPLAY: PlayerSpec = {
   command: "ffplay",
   args: (f) => ["-nodisp", "-autoexit", "-loglevel", "error", f],
+  stdinArgs: ["-nodisp", "-autoexit", "-loglevel", "error", "-f", "mp3", "-i", "pipe:0"],
   formats: ["mp3", "wav", "opus", "ogg", "flac", "m4a", "aac"],
 };
 
+const MPV: PlayerSpec = {
+  command: "mpv",
+  args: (f) => ["--no-video", "--really-quiet", f],
+  stdinArgs: ["--no-video", "--really-quiet", "-"],
+  formats: FFPLAY.formats,
+};
+
+const MPG123: PlayerSpec = {
+  command: "mpg123",
+  args: (f) => ["-q", f],
+  stdinArgs: ["-q", "-"],
+  formats: ["mp3"],
+};
+
+const AFPLAY: PlayerSpec = {
+  command: "afplay",
+  args: (f) => [f],
+  formats: ["mp3", "wav", "m4a", "aac", "aiff", "caf"],
+};
+
+/** File players per platform, in order of preference. */
 const PLAYERS: Partial<Record<NodeJS.Platform, PlayerSpec[]>> = {
-  darwin: [
-    {
-      command: "afplay",
-      args: (f) => [f],
-      formats: ["mp3", "wav", "m4a", "aac", "aiff", "caf"],
-    },
-    FFPLAY,
-  ],
+  darwin: [AFPLAY, FFPLAY, MPV],
   linux: [
     FFPLAY,
-    { command: "mpv", args: (f) => ["--no-video", "--really-quiet", f], formats: FFPLAY.formats },
-    { command: "mpg123", args: (f) => ["-q", f], formats: ["mp3"] },
+    MPV,
+    MPG123,
     { command: "paplay", args: (f) => [f], formats: ["wav", "ogg"] },
     { command: "aplay", args: (f) => ["-q", f], formats: ["wav"] },
   ],
@@ -42,7 +59,11 @@ const PLAYERS: Partial<Record<NodeJS.Platform, PlayerSpec[]>> = {
   ],
 };
 
+/** Players that can play an mp3 stream from stdin, in order of preference. Same list on every platform. */
+const STREAMING_PLAYERS: PlayerSpec[] = [FFPLAY, MPV, MPG123];
+
 let cachedPlayer: PlayerSpec | null | undefined;
+let cachedStreamingPlayer: PlayerSpec | null | undefined;
 
 function commandExists(command: string): boolean {
   const probe = process.platform === "win32" ? "where" : "which";
@@ -55,6 +76,14 @@ export function findPlayer(): PlayerSpec | null {
     cachedPlayer = specs.find((spec) => commandExists(spec.command)) ?? null;
   }
   return cachedPlayer;
+}
+
+/** The player used for streamed speech, or null when none of the stdin-capable players is installed. */
+export function findStreamingPlayer(): PlayerSpec | null {
+  if (cachedStreamingPlayer === undefined) {
+    cachedStreamingPlayer = STREAMING_PLAYERS.find((spec) => commandExists(spec.command)) ?? null;
+  }
+  return cachedStreamingPlayer;
 }
 
 /** Synthesis format to request when the audio is destined for local playback. */
@@ -88,19 +117,19 @@ export interface PlayerHandle {
   done: Promise<PlaybackResult>;
 }
 
+/** A player that is being fed audio through stdin. */
+export interface StreamHandle extends PlayerHandle {
+  write(chunk: Uint8Array): void;
+  /** Signal the end of the audio; the player finishes what it has buffered and exits. */
+  end(): void;
+}
+
 const activeChildren = new Set<ChildProcess>();
 process.on("exit", () => {
   for (const child of activeChildren) child.kill("SIGKILL");
 });
 
-/** Play a local audio file. Returns null when no player is available. */
-export function playFile(file: string): PlayerHandle | null {
-  const spec = findPlayer();
-  if (!spec) return null;
-
-  const child = spawn(spec.command, spec.args(file), {
-    stdio: ["ignore", "ignore", "pipe"],
-  });
+function attach(spec: PlayerSpec, child: ChildProcess): PlayerHandle {
   activeChildren.add(child);
 
   let stopped = false;
@@ -140,5 +169,33 @@ export function playFile(file: string): PlayerHandle | null {
       child.kill("SIGTERM");
     },
     done,
+  };
+}
+
+/** Play a local audio file. Returns null when no player is available. */
+export function playFile(file: string): PlayerHandle | null {
+  const spec = findPlayer();
+  if (!spec) return null;
+  const child = spawn(spec.command, spec.args(file), { stdio: ["ignore", "ignore", "pipe"] });
+  return attach(spec, child);
+}
+
+/** Start a player that reads mp3 from stdin. Returns null when no stdin-capable player is installed. */
+export function playStream(): StreamHandle | null {
+  const spec = findStreamingPlayer();
+  if (!spec?.stdinArgs) return null;
+  const child = spawn(spec.command, spec.stdinArgs, { stdio: ["pipe", "ignore", "pipe"] });
+  const stdin = child.stdin;
+  // EPIPE arrives when the player quits before the stream ends; the exit handler reports that case.
+  stdin?.on("error", () => {});
+  const handle = attach(spec, child);
+  return {
+    ...handle,
+    write(chunk) {
+      if (stdin && !stdin.destroyed && stdin.writable) stdin.write(chunk);
+    },
+    end() {
+      if (stdin && !stdin.destroyed) stdin.end();
+    },
   };
 }

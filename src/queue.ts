@@ -5,11 +5,13 @@ import { join } from "node:path";
 
 import { PaxaApiError } from "./api.js";
 import {
+  findPlayer,
+  findStreamingPlayer,
   noPlayerMessage,
   pauseSupported,
   playbackFormat,
   playFile,
-  findPlayer,
+  playStream,
   type PlayerHandle,
 } from "./player.js";
 
@@ -21,6 +23,8 @@ export type SegmentStatus =
   | "playing"
   | SegmentTerminalStatus;
 
+export type Delivery = "streamed" | "buffered";
+
 export interface Segment {
   id: number;
   kind: "tts" | "file";
@@ -30,6 +34,8 @@ export interface Segment {
   label: string;
   priority: boolean;
   status: SegmentStatus;
+  /** How the audio reached the player: streamed while synthesizing, or from a fully downloaded file. */
+  delivery?: Delivery;
   error?: string;
 }
 
@@ -38,18 +44,34 @@ interface InternalSegment extends Segment {
   resolvers: Array<(segment: Segment) => void>;
 }
 
+/** How the engine gets audio. Both calls synthesize the given text with the given voice. */
+export interface Synthesizer {
+  /** Full download, used to synthesize ahead while something else plays. */
+  buffered(text: string, voice: string, format: "mp3" | "wav"): Promise<Buffer>;
+  /** Chunked mp3 that starts arriving while synthesis runs. Optional; without it everything is buffered. */
+  stream?(text: string, voice: string, signal: AbortSignal): Promise<ReadableStream<Uint8Array>>;
+}
+
 const TERMINAL: ReadonlySet<SegmentStatus> = new Set(["done", "failed", "skipped", "cleared"]);
 const HISTORY_LIMIT = 50;
+
+interface SegmentBrief {
+  id: number;
+  label: string;
+  status: SegmentStatus;
+  delivery?: Delivery;
+}
 
 export interface EngineStatus {
   state: "idle" | "playing" | "paused";
   player: string | null;
+  streamingPlayer: string | null;
   pauseSupported: boolean;
-  current: { id: number; label: string; status: SegmentStatus } | null;
+  current: SegmentBrief | null;
   pendingCount: number;
   pendingChars: number;
-  nextUp: Array<{ id: number; label: string; status: SegmentStatus }>;
-  recentlyFinished: Array<{ id: number; label: string; status: SegmentStatus }>;
+  nextUp: SegmentBrief[];
+  recentlyFinished: SegmentBrief[];
   failures: Array<{ id: number; label: string; error: string }>;
 }
 
@@ -61,8 +83,11 @@ function label(text: string): string {
 /**
  * The single owner of the audio device. Every sound (speak, queued long-form
  * reads, replayed files) flows through one ordered queue, so audio never
- * overlaps. While a segment plays, the next TTS segment is synthesized ahead
- * of time so long reads flow without gaps.
+ * overlaps. A speech segment whose turn comes before it was synthesized ahead
+ * is streamed straight into the player, so the first words play while the rest
+ * is still being synthesized. While a segment plays, the next one is
+ * synthesized ahead so long reads flow without gaps. At most one synthesis
+ * request is in flight at a time.
  */
 export class SpeechEngine {
   private pending: InternalSegment[] = [];
@@ -75,13 +100,7 @@ export class SpeechEngine {
   private history: InternalSegment[] = [];
   private tmpDir: string | null = null;
 
-  constructor(
-    private readonly synthesize: (
-      text: string,
-      voice: string,
-      format: "mp3" | "wav",
-    ) => Promise<Buffer>,
-  ) {}
+  constructor(private readonly synth: Synthesizer) {}
 
   enqueueTts(texts: string[], voice: string, priority: boolean): Segment[] {
     const segments = texts.map((text): InternalSegment => {
@@ -181,10 +200,15 @@ export class SpeechEngine {
   }
 
   status(): EngineStatus {
-    const brief = (s: InternalSegment) => ({ id: s.id, label: s.label, status: s.status });
+    const brief = (s: InternalSegment): SegmentBrief => {
+      const out: SegmentBrief = { id: s.id, label: s.label, status: s.status };
+      if (s.delivery) out.delivery = s.delivery;
+      return out;
+    };
     return {
       state: this.paused ? "paused" : this.current ? "playing" : "idle",
       player: findPlayer()?.command ?? null,
+      streamingPlayer: this.synth.stream ? (findStreamingPlayer()?.command ?? null) : null,
       pauseSupported,
       current: this.current ? brief(this.current) : null,
       pendingCount: this.pending.length,
@@ -227,11 +251,20 @@ export class SpeechEngine {
   }
 
   private async runSegment(segment: InternalSegment): Promise<void> {
-    const upNext = this.pending.find((s) => s.kind === "tts" && s.status === "pending");
-    if (upNext) this.ensureSynth(upNext).catch(() => {});
-
     try {
-      if (segment.kind === "tts") await this.ensureSynth(segment);
+      const canStream = segment.kind === "tts" && !segment.synthPromise && !!this.synth.stream && !!findStreamingPlayer();
+      if (canStream) {
+        await this.pauseGate();
+        if (TERMINAL.has(segment.status)) return;
+        await this.streamSegment(segment);
+        return;
+      }
+
+      if (segment.kind === "tts") {
+        segment.delivery = "buffered";
+        await this.ensureSynth(segment);
+      }
+      this.synthesizeAhead();
       await this.pauseGate();
       if (TERMINAL.has(segment.status)) return;
 
@@ -256,12 +289,82 @@ export class SpeechEngine {
     }
   }
 
+  /** Stream a segment straight into the player while the API is still synthesizing it. */
+  private async streamSegment(segment: InternalSegment): Promise<void> {
+    const stream = this.synth.stream as NonNullable<Synthesizer["stream"]>;
+    segment.status = "synthesizing";
+    segment.delivery = "streamed";
+
+    const controller = new AbortController();
+    const body = await stream(segment.text as string, segment.voice as string, controller.signal);
+    if (TERMINAL.has(segment.status)) {
+      // Skipped or cleared while the request was being opened.
+      controller.abort();
+      return;
+    }
+
+    const handle = playStream();
+    if (!handle) {
+      controller.abort();
+      throw new Error(noPlayerMessage());
+    }
+    this.handle = handle;
+    if (this.paused) handle.pause();
+    // If the player stops early (skip, clear, or a player failure), stop pulling audio.
+    handle.done.then(
+      (r) => {
+        if (r.stopped) controller.abort();
+      },
+      () => controller.abort(),
+    );
+
+    const chunks: Buffer[] = [];
+    let streamError: unknown;
+    try {
+      for await (const chunk of body) {
+        const buf = Buffer.from(chunk);
+        chunks.push(buf);
+        if (segment.status === "synthesizing") segment.status = "playing";
+        handle.write(buf);
+      }
+    } catch (err) {
+      streamError = err;
+    } finally {
+      handle.end();
+    }
+    // The whole audio has arrived, so the next segment can synthesize while this one finishes playing.
+    this.synthesizeAhead();
+
+    const result = await handle.done;
+    this.handle = null;
+
+    if (chunks.length > 0) {
+      const file = join(this.ensureTmpDir(), `segment-${segment.id}.mp3`);
+      await writeFile(file, Buffer.concat(chunks));
+      segment.file = file;
+    }
+
+    if (streamError !== undefined && !controller.signal.aborted) {
+      const why = streamError instanceof Error ? streamError.message : String(streamError);
+      throw new Error(`The audio stream ended early: ${why}`);
+    }
+    if (segment.status === "playing" || segment.status === "synthesizing") {
+      segment.status = result.stopped ? "skipped" : "done";
+    }
+  }
+
+  /** Start synthesizing the next pending speech segment, so it is ready when its turn comes. */
+  private synthesizeAhead(): void {
+    const upNext = this.pending.find((s) => s.kind === "tts" && s.status === "pending");
+    if (upNext) this.ensureSynth(upNext).catch(() => {});
+  }
+
   private ensureSynth(segment: InternalSegment): Promise<void> {
     if (!segment.synthPromise) {
       if (segment.status === "pending") segment.status = "synthesizing";
       const format = playbackFormat();
       segment.synthPromise = (async () => {
-        const audio = await this.synthesize(segment.text as string, segment.voice as string, format);
+        const audio = await this.synth.buffered(segment.text as string, segment.voice as string, format);
         const file = join(this.ensureTmpDir(), `segment-${segment.id}.${format}`);
         await writeFile(file, audio);
         segment.file = file;

@@ -191,6 +191,17 @@ export interface AccountInfo {
   plan: { key: string; rpm: number; concurrency: number; monthly_credits: number };
 }
 
+/** A signal that aborts when either input aborts. */
+function eitherSignal(a: AbortSignal | undefined, b: AbortSignal): AbortSignal {
+  if (!a) return b;
+  const controller = new AbortController();
+  for (const signal of [a, b]) {
+    if (signal.aborted) controller.abort(signal.reason);
+    else signal.addEventListener("abort", () => controller.abort(signal.reason), { once: true });
+  }
+  return controller.signal;
+}
+
 export class PaxaClient {
   constructor(
     private readonly baseUrl: string,
@@ -199,7 +210,13 @@ export class PaxaClient {
 
   private async request(
     path: string,
-    init: { method?: string; body?: unknown; idempotent?: boolean; timeoutMs?: number } = {},
+    init: {
+      method?: string;
+      body?: unknown;
+      idempotent?: boolean;
+      timeoutMs?: number;
+      signal?: AbortSignal;
+    } = {},
   ): Promise<Response> {
     if (!this.apiKey) throw new Error(MISSING_KEY_MESSAGE);
     const headers: Record<string, string> = {
@@ -214,7 +231,7 @@ export class PaxaClient {
         method: init.method ?? "GET",
         headers,
         body: init.body === undefined ? undefined : JSON.stringify(init.body),
-        signal: AbortSignal.timeout(init.timeoutMs ?? 60_000),
+        signal: eitherSignal(init.signal, AbortSignal.timeout(init.timeoutMs ?? 60_000)),
       });
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);
@@ -248,6 +265,24 @@ export class PaxaClient {
       timeoutMs: 120_000,
     });
     return Buffer.from(await res.arrayBuffer());
+  }
+
+  /**
+   * Streaming synthesis. Resolves as soon as the response headers arrive; mp3
+   * chunks then follow on the body while synthesis is still running. A failure
+   * after the first byte shows up as a body that ends early, not as an error
+   * response, and the API refunds it automatically.
+   */
+  async ttsStream(req: TtsRequest, signal?: AbortSignal): Promise<ReadableStream<Uint8Array>> {
+    const res = await this.request("/v1/tts", {
+      method: "POST",
+      body: { model: TTS_MODEL, format: "mp3", ...req, stream: true },
+      idempotent: true,
+      timeoutMs: 120_000,
+      signal,
+    });
+    if (!res.body) throw new Error("The Paxa API returned an empty audio stream.");
+    return res.body;
   }
 
   async translate(req: TranslateRequest): Promise<TranslateResponse> {

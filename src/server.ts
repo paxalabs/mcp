@@ -85,7 +85,11 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         const settled = await engine.waitFor(segment as NonNullable<typeof segment>);
         switch (settled.status) {
           case "done":
-            return text(`Spoke ${input.length} characters with voice "${settled.voice}". Audio file: ${settled.file}`);
+            return text(
+              `Spoke ${input.length} characters with voice "${settled.voice}"` +
+                (settled.delivery === "streamed" ? " (streamed)" : "") +
+                `. Audio file: ${settled.file}`,
+            );
           case "skipped":
             return text("Playback was skipped before it finished.");
           case "cleared":

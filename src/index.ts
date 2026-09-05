@@ -11,7 +11,10 @@ async function main(): Promise<void> {
   if (!config.apiKey) console.error(`Warning: ${MISSING_KEY_MESSAGE}`);
 
   const client = new PaxaClient(config.baseUrl, config.apiKey);
-  const engine = new SpeechEngine((text, voice, format) => client.tts({ text, voice, format }));
+  const engine = new SpeechEngine({
+    buffered: (text, voice, format) => client.tts({ text, voice, format }),
+    stream: (text, voice, signal) => client.ttsStream({ text, voice, format: "mp3" }, signal),
+  });
   const server = createServer(config, client, engine);
 
   const shutdown = (): void => {
