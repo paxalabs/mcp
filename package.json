@@ -31,13 +31,14 @@
   "homepage": "https://paxalabs.com/docs",
   "repository": {
     "type": "git",
-    "url": "https://github.com/paxalabs/mcp.git"
+    "url": "git+https://github.com/paxalabs/mcp.git"
   },
   "bugs": {
     "url": "https://github.com/paxalabs/mcp/issues"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "tag": "latest"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
