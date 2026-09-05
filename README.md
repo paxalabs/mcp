@@ -63,6 +63,11 @@ lines slip in ahead of queued long-form segments, and `queue_speech` keeps a
 book or article flowing gap-free by synthesizing the next segment while the
 current one plays.
 
+With a streaming-capable player installed (see below), speech starts on the
+first bytes from the API instead of after the full download: about 0.3 s to
+the first word regardless of length, versus 0.7 s for a short line and 2.5 s
+for a long paragraph when buffered.
+
 ## Environment variables
 
 | Variable | Required | Default | Purpose |
@@ -74,14 +79,23 @@ current one plays.
 
 ## Playback support
 
-| Platform | Player | Pause/resume |
-| --- | --- | --- |
-| macOS | `afplay` (built in) | yes |
-| Linux | `ffplay`, `mpv`, `mpg123`, `paplay`, or `aplay` | yes |
-| Windows | `ffplay` if installed, else PowerShell (wav) | no |
+| Platform | File player | Streaming player | Pause/resume |
+| --- | --- | --- | --- |
+| macOS | `afplay` (built in) | `ffplay`, `mpv`, or `mpg123` if installed | yes |
+| Linux | `ffplay`, `mpv`, `mpg123`, `paplay`, or `aplay` | `ffplay`, `mpv`, or `mpg123` | yes |
+| Windows | `ffplay` if installed, else PowerShell (wav) | `ffplay` if installed | no |
 
-If no player is found, speech tools report it clearly and `text_to_speech`
-still works.
+Streaming needs a player that reads from stdin. On macOS, `brew install
+ffmpeg` (or `mpv`) enables it; without one, speech still plays through
+`afplay` after the download completes. If no player is found at all, speech
+tools report it clearly and `text_to_speech` still works.
+
+## Claude Desktop extension
+
+Each release on GitHub ships a `.mcpb` bundle. Download it, open it with
+Claude Desktop, and enter your API key in the extension settings. The bundle
+carries its own copy of the server and its dependencies, so it works without
+Node.js or npm on the machine.
 
 ## Development
 
@@ -89,6 +103,7 @@ still works.
 pnpm install
 pnpm build        # compile to dist/
 pnpm typecheck
+pnpm mcpb         # build release/paxalabs-mcp-<version>.mcpb for Claude Desktop
 
 # live smoke test (spends a few credits, plays audio out loud)
 PAXA_API_KEY=pxa_... TEST_OUT_DIR=/tmp/paxa-out node scripts/e2e.mjs

@@ -1,6 +1,6 @@
 {
   "name": "@paxalabs/mcp",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "mcpName": "com.paxalabs/mcp",
   "description": "Official MCP server for the Paxa Labs API: Thai/English text to speech with local playback, translation to Thai, and document OCR.",
   "license": "MIT",
@@ -17,7 +17,8 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "pnpm build"
+    "prepublishOnly": "pnpm build",
+    "mcpb": "node scripts/build-mcpb.mjs"
   },
   "keywords": [
     "mcp",
