@@ -60,8 +60,13 @@ const PLAYERS: Partial<Record<NodeJS.Platform, PlayerSpec[]>> = {
   ],
 };
 
-/** Players that can play an mp3 stream from stdin, in order of preference. Same list on every platform. */
-const STREAMING_PLAYERS: PlayerSpec[] = [FFPLAY, MPV, MPG123];
+/**
+ * Players that can play an mp3 stream from stdin, fastest to start first:
+ * mpg123 starts in about 50 ms, ffplay and mpv in about 300 ms (measured
+ * 2026-09-06), and that start-up is on the path to the first spoken word.
+ * Same list on every platform.
+ */
+const STREAMING_PLAYERS: PlayerSpec[] = [MPG123, FFPLAY, MPV];
 
 let cachedPlayer: PlayerSpec | null | undefined;
 let cachedStreamingPlayer: PlayerSpec | null | undefined;

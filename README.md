@@ -200,13 +200,13 @@ Use the absolute path to `paxa` in the hook command if that happens.
 
 | Platform | File player | Streaming player | Pause/resume |
 | --- | --- | --- | --- |
-| macOS | `afplay` (built in) | `ffplay`, `mpv`, or `mpg123` if installed | yes |
-| Linux | `ffplay`, `mpv`, `mpg123`, `paplay`, or `aplay` | `ffplay`, `mpv`, or `mpg123` | yes |
-| Windows | `ffplay` if installed, else PowerShell (wav) | `ffplay` if installed | no |
+| macOS | `afplay` (built in) | `mpg123`, `ffplay`, or `mpv` if installed | yes |
+| Linux | `ffplay`, `mpv`, `mpg123`, `paplay`, or `aplay` | `mpg123`, `ffplay`, or `mpv` | yes |
+| Windows | `ffplay` if installed, else PowerShell (wav) | `mpg123`, `ffplay`, or `mpv` if installed | no |
 
 Streaming needs a player that reads from stdin. On macOS, `brew install
-ffmpeg` (or `mpv`) enables it; without one, speech still plays through
-`afplay` after the download completes. If no player is found at all, speech
+mpg123` (the quickest to start) or `ffmpeg` enables it; without one,
+speech still plays through `afplay` after the download completes. If no player is found at all, speech
 tools report it clearly and `text_to_speech` still works.
 
 ## Claude Desktop extension

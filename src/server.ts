@@ -22,6 +22,7 @@ const TTS_CREDITS_PER_1K = 15;
 
 /** Single source of truth for the version the server reports: package.json. */
 const PACKAGE_VERSION = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
+const ICON_URL = "https://raw.githubusercontent.com/paxalabs/mcp/main/assets/icon.png";
 
 const AUDIO_EXTENSIONS = new Set([".mp3", ".wav", ".opus", ".ogg", ".flac", ".m4a", ".aac", ".aiff", ".caf"]);
 const OCR_EXTENSIONS = new Set([".pdf", ".png", ".jpg", ".jpeg", ".webp"]);
@@ -60,7 +61,13 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
     : ` WARNING: ${MISSING_KEY_MESSAGE} Until then every tool that calls the API fails with ` +
       "that message; control_playback and play_audio still work.";
   const server = new McpServer(
-    { name: "paxalabs", version: PACKAGE_VERSION },
+    {
+      name: "paxalabs",
+      title: "Paxa Labs",
+      version: PACKAGE_VERSION,
+      websiteUrl: "https://paxalabs.com/docs",
+      icons: [{ src: ICON_URL, mimeType: "image/png", sizes: ["512x512"] }],
+    },
     {
       instructions:
         "Paxa Labs API server (Thai and English speech AI). speak plays a short line out loud on " +

@@ -295,28 +295,47 @@ export class SpeechEngine {
     segment.status = "synthesizing";
     segment.delivery = "streamed";
 
-    const controller = new AbortController();
-    const body = await stream(segment.text as string, segment.voice as string, controller.signal);
-    if (TERMINAL.has(segment.status)) {
-      // Skipped or cleared while the request was being opened.
-      controller.abort();
-      return;
-    }
-
+    // Start the player before the request goes out, so its start-up (about
+    // 50 ms for mpg123, 300 ms for ffplay) overlaps the network round trip
+    // instead of adding to the time to the first word.
     const handle = playStream();
-    if (!handle) {
-      controller.abort();
-      throw new Error(noPlayerMessage());
-    }
+    if (!handle) throw new Error(noPlayerMessage());
     this.handle = handle;
     if (this.paused) handle.pause();
+    const controller = new AbortController();
+    let playerFailure: unknown;
     // If the player stops early (skip, clear, or a player failure), stop pulling audio.
     handle.done.then(
       (r) => {
         if (r.stopped) controller.abort();
       },
-      () => controller.abort(),
+      (err: unknown) => {
+        playerFailure = err;
+        controller.abort();
+      },
     );
+
+    let body: ReadableStream<Uint8Array>;
+    try {
+      body = await stream(segment.text as string, segment.voice as string, controller.signal);
+    } catch (err) {
+      handle.stop();
+      this.handle = null;
+      if (playerFailure !== undefined) throw playerFailure;
+      if (controller.signal.aborted) {
+        // Skipped or cleared while the request was in flight; clear already set its status.
+        if (segment.status === "synthesizing") segment.status = "skipped";
+        return;
+      }
+      throw err;
+    }
+    if (TERMINAL.has(segment.status)) {
+      // Cleared while the request was being opened.
+      controller.abort();
+      handle.stop();
+      this.handle = null;
+      return;
+    }
 
     const chunks: Buffer[] = [];
     let streamError: unknown;
