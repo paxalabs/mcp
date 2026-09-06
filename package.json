@@ -6,9 +6,7 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "mcp": "dist/index.js",
-    "paxalabs-mcp": "dist/index.js",
-    "paxa-say": "dist/say.js"
+    "paxa": "dist/index.js"
   },
   "files": [
     "dist"

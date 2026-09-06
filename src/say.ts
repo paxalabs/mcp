@@ -1,9 +1,8 @@
-#!/usr/bin/env node
-// paxa-say: speak one line from the command line, or from a Claude Code hook.
+// `paxa say`: speak one line from the command line, or from a Claude Code hook.
 //
-//   paxa-say "Build finished"                 speak the arguments
-//   paxa-say --voice cookie "Hello"           pick a voice
-//   echo "text" | paxa-say                    speak stdin
+//   paxa say "Build finished"                 speak the arguments
+//   paxa say --voice cookie "Hello"           pick a voice
+//   echo "text" | paxa say                    speak stdin
 //   Claude Code hook (stdin is the hook JSON) speak a phrase chosen by event type
 //
 // The key comes from PAXA_API_KEY, or, when that is unset, from the paxa
@@ -30,8 +29,8 @@ const PHRASES: Record<string, string> = {
 
 function usage(): never {
   process.stderr.write(
-    "Usage: paxa-say [--voice <id>] <text>\n" +
-      "       echo <text> | paxa-say\n" +
+    "Usage: paxa say [--voice <id>] <text>\n" +
+      "       echo <text> | paxa say\n" +
       "       (as a Claude Code hook, with the hook JSON on stdin)\n",
   );
   process.exit(64);
@@ -77,8 +76,8 @@ function keyFromClaudeConfig(): string | undefined {
   return undefined;
 }
 
-async function main(): Promise<void> {
-  const args = process.argv.slice(2);
+/** Runs the `say` subcommand. `args` are the arguments after "say". */
+export async function runSay(args: string[]): Promise<void> {
   let voice: string | undefined;
   const words: string[] = [];
   for (let i = 0; i < args.length; i++) {
@@ -99,7 +98,7 @@ async function main(): Promise<void> {
   if (!text) usage();
 
   const fail = (message: string): never => {
-    process.stderr.write(`paxa-say: ${message}\n`);
+    process.stderr.write(`paxa say: ${message}\n`);
     process.exit(hookMode ? 0 : 1);
   };
 
@@ -119,8 +118,3 @@ async function main(): Promise<void> {
   engine.dispose();
   if (settled.status !== "done") fail(settled.error ?? `playback ${settled.status}`);
 }
-
-main().catch((err: unknown) => {
-  process.stderr.write(`paxa-say: ${err instanceof Error ? err.message : String(err)}\n`);
-  process.exit(1);
-});

@@ -97,9 +97,9 @@ I am often away from the screen, so use voice like this:
 
 **3. Get told when Claude needs you.** When Claude Code waits for a
 permission or an answer, the model is not running, so it cannot call
-speak. Claude Code fires a hook at those moments instead, and `paxa-say`,
-a small command shipped in this package, turns the hook into a spoken
-phrase such as "Claude needs your permission." Put it on your PATH:
+speak. Claude Code fires a hook at those moments instead, and `paxa say`
+turns the hook into a spoken phrase such as "Claude needs your
+permission." Put the `paxa` command on your PATH:
 
 ```bash
 npm install -g @paxalabs/mcp
@@ -113,22 +113,26 @@ Then add to `~/.claude/settings.json`:
     "Notification": [
       {
         "matcher": "permission_prompt|idle_prompt|agent_needs_input",
-        "hooks": [{ "type": "command", "command": "paxa-say" }]
+        "hooks": [{ "type": "command", "command": "paxa say" }]
       }
     ]
   }
 }
 ```
 
-`paxa-say` takes the key from `PAXA_API_KEY`, or from the paxa entry in
+`paxa say` takes the key from `PAXA_API_KEY`, or from the paxa entry in
 `~/.claude.json` when that is unset, so step 1 is all the setup it needs.
 A `Stop` hook configured the same way speaks "Done." at the end of every
 turn. A phrase costs well under one credit. It also works on its own:
 
 ```bash
-paxa-say "Build finished"
-paxa-say --voice cookie "Deploy is live"
+paxa say "Build finished"
+paxa say --voice cookie "Deploy is live"
 ```
+
+If your editor or desktop app was not launched from a terminal, its PATH
+may not include your node bin directory, and the hook will fail silently.
+Use the absolute path to `paxa` in the hook command if that happens.
 
 ## Environment variables
 
