@@ -1,12 +1,13 @@
 {
   "name": "@paxalabs/mcp",
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0-beta.4",
   "mcpName": "com.paxalabs/mcp",
   "description": "Official MCP server for the Paxa Labs API: Thai/English text to speech with local playback, translation to Thai, and document OCR.",
   "license": "MIT",
   "type": "module",
   "bin": {
-    "paxalabs-mcp": "dist/index.js"
+    "paxalabs-mcp": "dist/index.js",
+    "paxa-say": "dist/say.js"
   },
   "files": [
     "dist"

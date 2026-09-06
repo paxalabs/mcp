@@ -68,13 +68,75 @@ first bytes from the API instead of after the full download: about 0.3 s to
 the first word regardless of length, versus 0.7 s for a short line and 2.5 s
 for a long paragraph when buffered.
 
+## Voice mode for Claude Code
+
+Three pieces turn Claude Code into something you can walk away from: it
+talks when it has news, and it calls you when it needs you.
+
+**1. Install the server** (Quick start above).
+
+**2. Tell Claude when to talk.** Add this to `~/.claude/CLAUDE.md`, or to
+one project's CLAUDE.md:
+
+```markdown
+## Voice
+
+I have the Paxa MCP server (tools: speak, queue_speech, control_playback).
+I am often away from the screen, so use voice like this:
+
+- At the end of a turn where you did real work, call speak with a one or
+  two sentence summary before writing the final message: what you did,
+  what is next, and anything you need from me.
+- When you need a decision from me, speak the question too.
+- Keep it short and conversational. Never read code, file paths, logs, or
+  long lists aloud. Those stay in text.
+- Do not speak for quick back-and-forth or trivial answers.
+- If I ask to hear something long, use queue_speech.
+- Speak in the language I write in.
+```
+
+**3. Get told when Claude needs you.** When Claude Code waits for a
+permission or an answer, the model is not running, so it cannot call
+speak. Claude Code fires a hook at those moments instead, and `paxa-say`,
+a small command shipped in this package, turns the hook into a spoken
+phrase such as "Claude needs your permission." Put it on your PATH:
+
+```bash
+npm install -g @paxalabs/mcp
+```
+
+Then add to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "permission_prompt|idle_prompt|agent_needs_input",
+        "hooks": [{ "type": "command", "command": "paxa-say" }]
+      }
+    ]
+  }
+}
+```
+
+`paxa-say` takes the key from `PAXA_API_KEY`, or from the paxa entry in
+`~/.claude.json` when that is unset, so step 1 is all the setup it needs.
+A `Stop` hook configured the same way speaks "Done." at the end of every
+turn. A phrase costs well under one credit. It also works on its own:
+
+```bash
+paxa-say "Build finished"
+paxa-say --voice cookie "Deploy is live"
+```
+
 ## Environment variables
 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
 | `PAXA_API_KEY` | yes | | Your API key. The server starts without it, but every tool that calls the API then fails with setup instructions the agent can relay |
 | `PAXA_OUTPUT_DIR` | no | working directory | Where `text_to_speech` saves files |
-| `PAXA_DEFAULT_VOICE` | no | `nomyen` | Voice used when a tool call does not pick one |
+| `PAXA_DEFAULT_VOICE` | no | `nomyen` | Voice used when a tool call does not pick one. English text usually sounds best with an English voice (`donut`, `cookie`, `toast`, `latte`) |
 | `PAXA_BASE_URL` | no | `https://api.paxalabs.com` | API origin override |
 
 ## Playback support

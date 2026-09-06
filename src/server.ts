@@ -40,6 +40,15 @@ function estimateTtsCredits(chars: number): number {
   return Math.max(0.1, (chars * TTS_CREDITS_PER_1K) / 1000);
 }
 
+/** Shared guidance on choosing a voice; a hint, since some users prefer Thai-accented English. */
+export const VOICE_GUIDANCE =
+  "English text usually sounds best with one of the English voices (donut, cookie, toast, latte); " +
+  "some users prefer Thai-accented English, so follow the user's preference when they have one.";
+
+function voiceHint(config: Config): string {
+  return `Voice id from list_voices (default "${config.defaultVoice}", a Thai voice). ${VOICE_GUIDANCE}`;
+}
+
 function timestampName(voice: string, format: string): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   return `paxa-tts-${stamp}-${voice}.${format}`;
@@ -76,7 +85,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         `Costs ${TTS_CREDITS_PER_1K} credits per 1000 characters.`,
       inputSchema: {
         text: z.string().min(1).max(2000).describe("Text to speak, Thai or English, up to 2000 characters"),
-        voice: z.string().optional().describe(`Voice id from list_voices (default "${config.defaultVoice}")`),
+        voice: z.string().optional().describe(voiceHint(config)),
       },
     },
     async ({ text: input, voice }) => {
@@ -115,7 +124,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         `Costs ${TTS_CREDITS_PER_1K} credits per 1000 characters.`,
       inputSchema: {
         text: z.string().min(1).max(200_000).describe("Text to read aloud, Thai or English"),
-        voice: z.string().optional().describe(`Voice id from list_voices (default "${config.defaultVoice}")`),
+        voice: z.string().optional().describe(voiceHint(config)),
       },
     },
     async ({ text: input, voice }) => {
@@ -228,7 +237,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         `Costs ${TTS_CREDITS_PER_1K} credits per 1000 characters.`,
       inputSchema: {
         text: z.string().min(1).max(TTS_MAX_CHARS).describe(`Text to synthesize, up to ${TTS_MAX_CHARS} characters`),
-        voice: z.string().optional().describe(`Voice id from list_voices (default "${config.defaultVoice}")`),
+        voice: z.string().optional().describe(voiceHint(config)),
         format: z.enum(["mp3", "opus", "wav"]).optional().describe('Audio format (default "mp3")'),
         output_path: z
           .string()
@@ -382,7 +391,10 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
           const traits = [v.name, v.gender, v.language, v.accent].filter(Boolean).join(", ");
           return `- ${v.id} (${traits}): ${v.description ?? "no description"}`;
         });
-        return text(`${voices.length} voices. Default voice: ${config.defaultVoice}.\n${lines.join("\n")}`);
+        return text(
+          `${voices.length} voices. Default voice: ${config.defaultVoice}. ` +
+            `Thai leads: khanomkrok (male) and nomyen (female). ${VOICE_GUIDANCE}\n${lines.join("\n")}`,
+        );
       } catch (err) {
         return failure(err);
       }
