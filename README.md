@@ -1,5 +1,14 @@
 # @paxalabs/mcp
 
+[![npm](https://img.shields.io/npm/v/@paxalabs/mcp)](https://www.npmjs.com/package/@paxalabs/mcp)
+[![CI](https://github.com/paxalabs/mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/paxalabs/mcp/actions/workflows/ci.yml)
+[![node](https://img.shields.io/node/v/@paxalabs/mcp)](https://nodejs.org)
+[![license](https://img.shields.io/npm/l/@paxalabs/mcp)](LICENSE)
+[![Claude Desktop bundle](https://img.shields.io/github/v/release/paxalabs/mcp?include_prereleases&label=Claude%20Desktop%20.mcpb)](https://github.com/paxalabs/mcp/releases)
+
+[![Add to Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/install-mcp?name=paxa&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBwYXhhbGFicy9tY3AiXSwiZW52Ijp7IlBBWEFfQVBJX0tFWSI6InB4YV95b3VyX2tleV9oZXJlIn19)
+[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect/mcp/install?name=paxa&config=%7B%22name%22%3A%22paxa%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40paxalabs/mcp%22%5D%2C%22env%22%3A%7B%22PAXA_API_KEY%22%3A%22pxa_your_key_here%22%7D%7D)
+
 Official [MCP](https://modelcontextprotocol.io) server for the
 [Paxa Labs API](https://paxalabs.com/docs): Thai and English speech AI for
 your agent, including local audio playback.
@@ -43,11 +52,12 @@ Add to your client's MCP configuration (for Claude Desktop:
 }
 ```
 
-**Cursor, one click:** the button installs the same entry into
-`~/.cursor/mcp.json`. Then replace `pxa_your_key_here` in the `paxa`
-entry with your key (Cursor Settings, MCP).
+**One click for Cursor or VS Code:** the buttons install the same entry
+into `~/.cursor/mcp.json` or VS Code's MCP settings. Then replace
+`pxa_your_key_here` in the `paxa` entry with your key.
 
-[![Install in Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/install-mcp?name=paxa&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBwYXhhbGFicy9tY3AiXSwiZW52Ijp7IlBBWEFfQVBJX0tFWSI6InB4YV95b3VyX2tleV9oZXJlIn19)
+[![Add to Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/install-mcp?name=paxa&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBwYXhhbGFicy9tY3AiXSwiZW52Ijp7IlBBWEFfQVBJX0tFWSI6InB4YV95b3VyX2tleV9oZXJlIn19)
+[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect/mcp/install?name=paxa&config=%7B%22name%22%3A%22paxa%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40paxalabs/mcp%22%5D%2C%22env%22%3A%7B%22PAXA_API_KEY%22%3A%22pxa_your_key_here%22%7D%7D)
 
 ## Tools
 

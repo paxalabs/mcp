@@ -3,3 +3,4 @@ dist/
 .env
 *.log
 release/
+.DS_Store
