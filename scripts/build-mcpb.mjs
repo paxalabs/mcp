@@ -70,7 +70,7 @@ const manifest = {
     "Requires a Paxa API key from https://paxalabs.com/app/keys (new accounts include free credits). " +
     "Paid tools spend account credits; every tool description states its price. " +
     "Docs: https://paxalabs.com/docs",
-  author: { name: "Paxa Labs", url: "https://paxalabs.com" },
+  author: { name: "Paxa Labs", url: "https://github.com/paxalabs" },
   repository: { type: "git", url: "https://github.com/paxalabs/mcp" },
   homepage: "https://paxalabs.com/docs",
   documentation: "https://paxalabs.com/docs",

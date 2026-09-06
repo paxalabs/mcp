@@ -1,6 +1,6 @@
 {
   "name": "@paxalabs/mcp",
-  "version": "0.1.0-beta.6",
+  "version": "0.1.0-beta.7",
   "mcpName": "com.paxalabs/mcp",
   "description": "Official MCP server for the Paxa Labs API: Thai/English text to speech with local playback, translation to Thai, and document OCR.",
   "license": "MIT",

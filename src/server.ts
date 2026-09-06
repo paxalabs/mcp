@@ -77,7 +77,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
     "speak",
     {
       title: "Speak out loud",
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      annotations: { title: "Speak out loud", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
       description:
         "Synthesize a short line with Paxa TTS and play it through this machine's speakers. " +
         "Blocks until playback finishes. Waits for the currently playing audio but jumps ahead " +
@@ -116,7 +116,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
     "queue_speech",
     {
       title: "Queue long-form speech",
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      annotations: { title: "Queue long-form speech", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
       description:
         "Read long content aloud (stories, articles, books). Splits the text into segments, " +
         "synthesizes ahead while playing, and returns immediately; segments play in order " +
@@ -149,7 +149,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
     "control_playback",
     {
       title: "Playback control",
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      annotations: { title: "Playback control", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       description:
         "Inspect and control the shared audio queue. status reports what is playing, what is " +
         "queued, and any synthesis failures. pause and resume halt and continue playback " +
@@ -194,7 +194,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
     "play_audio",
     {
       title: "Play an audio file",
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      annotations: { title: "Play an audio file", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       description:
         "Play a local audio file through this machine's speakers, for example a file produced " +
         "earlier by text_to_speech. Blocks until playback finishes. Free (no API call).",
@@ -231,7 +231,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
     "text_to_speech",
     {
       title: "Text to speech (file only)",
-      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+      annotations: { title: "Text to speech (file only)", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       description:
         "Synthesize speech with Paxa TTS and save it as an audio file without playing it. " +
         `Costs ${TTS_CREDITS_PER_1K} credits per 1000 characters.`,
@@ -272,7 +272,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
     "translate_to_thai",
     {
       title: "Translate to Thai",
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      annotations: { title: "Translate to Thai", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       description:
         "Translate text from any language into Thai with Paxa Translate. Accepts a single " +
         "string or up to 200 segments that share context. Costs 25 credits per 1000 text " +
@@ -331,7 +331,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
     "ocr_document",
     {
       title: "OCR a document",
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      annotations: { title: "OCR a document", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       description:
         "Run Paxa OCR on a local PDF, PNG, JPEG, or WebP file and return its content as " +
         "GitHub-flavored Markdown (or structured blocks). Up to 50 pages and 10 MiB per file. " +
@@ -380,7 +380,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
     "list_voices",
     {
       title: "List voices",
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      annotations: { title: "List voices", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       description: "List the Paxa TTS voice roster: ids, names, gender, language, and character notes. Free.",
       inputSchema: {},
     },
@@ -405,7 +405,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
     "list_models",
     {
       title: "List models",
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      annotations: { title: "List models", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       description: "List available Paxa models with their limits and credit pricing. Free.",
       inputSchema: {},
     },
@@ -439,7 +439,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
     "get_account",
     {
       title: "Account and credits",
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      annotations: { title: "Account and credits", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       description: "Show the API key's account: credit balance, plan, and rate limits. Free.",
       inputSchema: {},
     },
