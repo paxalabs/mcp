@@ -43,6 +43,12 @@ Add to your client's MCP configuration (for Claude Desktop:
 }
 ```
 
+**Cursor, one click:** the button installs the same entry into
+`~/.cursor/mcp.json`. Then replace `pxa_your_key_here` in the `paxa`
+entry with your key (Cursor Settings, MCP).
+
+[![Install in Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/install-mcp?name=paxa&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBwYXhhbGFicy9tY3AiXSwiZW52Ijp7IlBBWEFfQVBJX0tFWSI6InB4YV95b3VyX2tleV9oZXJlIn19)
+
 ## Tools
 
 | Tool | What it does | Credits |
