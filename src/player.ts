@@ -1,4 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { extname } from "node:path";
 
 interface PlayerSpec {
   command: string;
@@ -172,12 +173,31 @@ function attach(spec: PlayerSpec, child: ChildProcess): PlayerHandle {
   };
 }
 
+function start(spec: PlayerSpec, file: string): PlayerHandle {
+  const child = spawn(spec.command, spec.args(file), { stdio: ["ignore", "ignore", "pipe"] });
+  return attach(spec, child);
+}
+
 /** Play a local audio file. Returns null when no player is available. */
 export function playFile(file: string): PlayerHandle | null {
   const spec = findPlayer();
-  if (!spec) return null;
-  const child = spawn(spec.command, spec.args(file), { stdio: ["ignore", "ignore", "pipe"] });
-  return attach(spec, child);
+  return spec ? start(spec, file) : null;
+}
+
+/**
+ * Players with a small fixed start-up cost, fastest first, for short clips
+ * where starting the player takes longer than the audio. Measured on a Mac:
+ * mpg123 about 50 ms, ffplay and mpv about 300 ms, while afplay needs 0.4 to
+ * 0.9 s just to start and stop. Only mp3-capable players are here, so the
+ * format check below matters.
+ */
+const QUICK_PLAYERS: PlayerSpec[] = [MPG123, FFPLAY, MPV];
+
+/** Play a short clip through the fastest-starting installed player that can play its format, else the platform file player. */
+export function playClip(file: string): PlayerHandle | null {
+  const ext = extname(file).slice(1).toLowerCase();
+  const spec = QUICK_PLAYERS.find((s) => s.formats.includes(ext) && commandExists(s.command)) ?? findPlayer();
+  return spec ? start(spec, file) : null;
 }
 
 /** Start a player that reads mp3 from stdin. Returns null when no stdin-capable player is installed. */

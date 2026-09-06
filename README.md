@@ -98,8 +98,8 @@ I am often away from the screen, so use voice like this:
 **3. Get told when Claude needs you.** When Claude Code waits for a
 permission or an answer, the model is not running, so it cannot call
 speak. Claude Code fires a hook at those moments instead, and `paxa say`
-turns the hook into a spoken phrase such as "Claude needs your
-permission." Put the `paxa` command on your PATH:
+turns the hook into a spoken phrase such as "Permission needed." Put
+the `paxa` command on your PATH:
 
 ```bash
 npm install -g @paxalabs/mcp
@@ -123,7 +123,44 @@ Then add to `~/.claude/settings.json`:
 `paxa say` takes the key from `PAXA_API_KEY`, or from the paxa entry in
 `~/.claude.json` when that is unset, so step 1 is all the setup it needs.
 A `Stop` hook configured the same way speaks "Done." at the end of every
-turn. A phrase costs well under one credit. It also works on its own:
+turn.
+
+The built-in phrases are synthesized once per voice and kept in your
+user cache directory (`~/Library/Caches/paxa/say` on macOS,
+`~/.cache/paxa/say` on Linux, `%LOCALAPPDATA%\paxa\cache\say` on
+Windows). After that first play, which costs well under one credit, a
+notification plays from disk: no network round trip and no credits.
+
+To change the words, write your own text in the hook command and add
+`--cache` so it gets the same treatment. One entry per event, since the
+matcher picks the event:
+
+```json
+{
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "permission_prompt",
+        "hooks": [{ "type": "command", "command": "paxa say --cache \"Hey, need your OK\"" }]
+      },
+      {
+        "matcher": "idle_prompt|agent_needs_input",
+        "hooks": [{ "type": "command", "command": "paxa say --cache --voice cookie \"Your turn\"" }]
+      }
+    ]
+  }
+}
+```
+
+Without `--cache`, nothing you type or pipe into `paxa say` is written to
+disk, and messages carried inside a hook payload never are.
+
+On macOS the built-in `afplay` needs about half a second just to start
+and stop, which is most of the delay you hear on a short phrase. With
+`brew install mpg123` (or `ffmpeg`) installed, cached phrases play
+through that instead: mpg123 starts in about 50 ms, ffplay in about 300 ms.
+
+`paxa say` also works on its own:
 
 ```bash
 paxa say "Build finished"

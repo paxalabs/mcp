@@ -1,18 +1,21 @@
 #!/usr/bin/env node
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-
-import { PaxaClient } from "./api.js";
 import { MISSING_KEY_MESSAGE, loadConfig } from "./config.js";
-import { runSay } from "./say.js";
-import { SpeechEngine } from "./queue.js";
-import { createServer } from "./server.js";
 
 async function main(): Promise<void> {
-  // `paxa say ...` speaks a line and exits; with no subcommand we are the MCP server.
+  // `paxa say ...` speaks a line and exits; with no subcommand we are the MCP
+  // server. Each side is imported only when chosen: `paxa say` runs on every
+  // hook notification, and loading the MCP SDK there would cost it about
+  // 60 ms for nothing.
   if (process.argv[2] === "say") {
+    const { runSay } = await import("./say.js");
     await runSay(process.argv.slice(3));
     return;
   }
+
+  const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
+  const { PaxaClient } = await import("./api.js");
+  const { SpeechEngine } = await import("./queue.js");
+  const { createServer } = await import("./server.js");
 
   const config = loadConfig();
   if (!config.apiKey) console.error(`Warning: ${MISSING_KEY_MESSAGE}`);
