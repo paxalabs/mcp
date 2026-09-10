@@ -1,6 +1,6 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -8,6 +8,9 @@ import { z } from "zod";
 
 import {
   OCR_MAX_BYTES,
+  STT_MAX_BYTES,
+  type SttRequest,
+  type SttResponse,
   PaxaApiError,
   PaxaClient,
   TTS_MAX_CHARS,
@@ -26,6 +29,10 @@ const ICON_URL = "https://raw.githubusercontent.com/paxalabs/mcp/main/assets/ico
 
 const AUDIO_EXTENSIONS = new Set([".mp3", ".wav", ".opus", ".ogg", ".flac", ".m4a", ".aac", ".aiff", ".caf"]);
 const OCR_EXTENSIONS = new Set([".pdf", ".png", ".jpg", ".jpeg", ".webp"]);
+const STT_EXTENSIONS = new Set([".mp3", ".wav", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".webm"]);
+const STT_CREDITS_PER_MINUTE = 8.33;
+/** Inline transcripts longer than this are cut, with a pointer to the saved file. An hour of speech is well under it. */
+const INLINE_TRANSCRIPT_LIMIT = 200_000;
 
 function text(body: string): CallToolResult {
   return { content: [{ type: "text", text: body }] };
@@ -35,6 +42,33 @@ function failure(err: unknown): CallToolResult {
   const body =
     err instanceof PaxaApiError ? err.display() : err instanceof Error ? err.message : String(err);
   return { content: [{ type: "text", text: body }], isError: true };
+}
+
+/** The first free name among stem.ext, stem-2.ext, stem-3.ext: this server never overwrites a file. */
+async function unusedPath(dir: string, stem: string, ext: string): Promise<string> {
+  for (let n = 1; ; n++) {
+    const candidate = join(dir, n === 1 ? `${stem}${ext}` : `${stem}-${n}${ext}`);
+    if (!(await stat(candidate).catch(() => null))) return candidate;
+  }
+}
+
+/** SRT and WebVTT share their cues; VTT adds a signature line and writes a period before the milliseconds. */
+function srtToVtt(srt: string): string {
+  return "WEBVTT\n\n" + srt.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, "$1.$2");
+}
+
+/** The transcript as prose, or one line per speaker turn when the recording was diarized. */
+function transcriptText(response: SttResponse, diarized: boolean): string {
+  if (diarized && response.segments && response.segments.length > 0) {
+    return response.segments.map((seg) => `Speaker ${(seg.speaker ?? 0) + 1}: ${seg.text.trim()}`).join("\n");
+  }
+  return response.text.trim();
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds.toFixed(1)} s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes} min ${Math.round(seconds - minutes * 60)} s`;
 }
 
 function estimateTtsCredits(chars: number): number {
@@ -74,7 +108,8 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         "this machine; queue_speech reads long content aloud continuously; control_playback inspects and " +
         "controls the shared audio queue; text_to_speech writes an audio file without playing it; " +
         "play_audio replays a local audio file; translate_to_thai translates any language into " +
-        "Thai; ocr_document runs OCR on a local PDF or image. Paid tools spend account credits " +
+        "Thai; ocr_document runs OCR on a local PDF or image; transcribe_audio turns a local " +
+        "recording into text and subtitles. Paid tools spend account credits " +
         "(check with get_account)." +
         keyWarning,
     },
@@ -384,6 +419,147 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
   );
 
   server.registerTool(
+    "transcribe_audio",
+    {
+      title: "Transcribe a recording",
+      annotations: { title: "Transcribe a recording", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      description:
+        "Transcribe a local recording of Thai or English speech (mp3, wav, flac, ogg, m4a, aac, or webm; " +
+        "up to 60 minutes and 25 MiB) with Paxa STT. The transcript comes back inline, so nothing needs " +
+        "to be read from disk afterwards; optionally it is also saved as txt, json (with word timings " +
+        "and segments), srt, or vtt, named after the recording. Existing files are never overwritten. " +
+        "Detects the language, handles code-switching, and can label speakers. Costs " +
+        `${STT_CREDITS_PER_MINUTE} credits per minute of audio (0.1 minimum); subtitles and word timings ` +
+        "cost nothing extra. Long recordings take minutes to process.",
+      inputSchema: {
+        file_path: z.string().describe("Path to a local mp3, wav, flac, ogg, m4a, aac, or webm recording"),
+        language: z
+          .string()
+          .max(16)
+          .optional()
+          .describe('Language hint as a BCP 47 tag such as "th" or "en". Omit to auto-detect.'),
+        diarization: z
+          .boolean()
+          .optional()
+          .describe("Label speakers. The transcript is then returned as one line per turn, and subtitle cues never cross a speaker change."),
+        style: z
+          .enum(["verbatim", "clean"])
+          .optional()
+          .describe('"verbatim" (default) keeps fillers and false starts; "clean" drops them'),
+        convention: z
+          .enum(["spoken", "written"])
+          .optional()
+          .describe('"spoken" (default) writes numbers and dates as they were said; "written" uses numerals'),
+        vocabulary: z
+          .array(z.string().max(50))
+          .max(50)
+          .optional()
+          .describe("Up to 50 names or domain terms to bias recognition toward"),
+        timestamps: z
+          .boolean()
+          .optional()
+          .describe("Also return word-level timings inline as JSON (can be long). The json file always has them."),
+        subtitle_line_chars: z
+          .number()
+          .int()
+          .min(10)
+          .max(120)
+          .optional()
+          .describe("Characters per subtitle line, 10 to 120 (default 60). Thai marks above and below consonants are not counted."),
+        save: z
+          .array(z.enum(["txt", "json", "srt", "vtt"]))
+          .optional()
+          .describe(
+            "Files to write, named after the recording: txt (the transcript), json (text, words with timings, segments, usage), " +
+              "srt or vtt (subtitles rendered by the API). Omit to write nothing.",
+          ),
+        output_dir: z
+          .string()
+          .optional()
+          .describe("Where to write the files. Defaults to the recording's own folder. A relative path resolves against PAXA_OUTPUT_DIR (or the working directory)."),
+      },
+    },
+    async ({ file_path, language, diarization, style, convention, vocabulary, timestamps, subtitle_line_chars, save, output_dir }) => {
+      try {
+        const path = resolve(file_path);
+        const info = await stat(path).catch(() => null);
+        if (!info?.isFile()) return failure(`No file found at ${path}`);
+        if (info.size > STT_MAX_BYTES) {
+          return failure(
+            `${path} is ${(info.size / 1024 / 1024).toFixed(1)} MiB; the transcription limit is 25 MiB per file.`,
+          );
+        }
+        const ext = extname(path).toLowerCase();
+        if (ext && !STT_EXTENSIONS.has(ext)) {
+          return failure(`${path} is not a supported recording type (mp3, wav, flac, ogg, m4a, aac, webm).`);
+        }
+
+        const formats = new Set(save ?? []);
+        const wantSrt = formats.has("srt");
+        const wantVtt = formats.has("vtt");
+        const request: SttRequest = { audio: (await readFile(path)).toString("base64") };
+        if (language) request.language = language;
+        if (diarization) request.diarization = true;
+        if (style) request.style = style;
+        if (convention) request.convention = convention;
+        if (vocabulary && vocabulary.length > 0) request.vocabulary = vocabulary;
+        if (timestamps || formats.has("json")) request.timestamps = "word";
+        // One rendered file covers both subtitle formats: VTT is derived from SRT when both are wanted.
+        if (wantSrt || wantVtt) request.subtitles = wantSrt ? "srt" : "vtt";
+        if (subtitle_line_chars != null) request.subtitle_line_chars = subtitle_line_chars;
+
+        const response = await client.stt(request);
+        const transcript = transcriptText(response, diarization === true);
+
+        const written: string[] = [];
+        if (formats.size > 0) {
+          const dir = output_dir
+            ? isAbsolute(output_dir)
+              ? output_dir
+              : join(config.outputDir, output_dir)
+            : dirname(path);
+          await mkdir(dir, { recursive: true });
+          const stem = basename(path, extname(path));
+          const files: Array<[string, string]> = [];
+          if (formats.has("txt")) files.push([".txt", transcript + "\n"]);
+          if (formats.has("json")) {
+            const record = {
+              text: response.text,
+              words: response.words ?? [],
+              segments: response.segments ?? [],
+              usage: response.usage,
+            };
+            files.push([".json", JSON.stringify(record, null, 2) + "\n"]);
+          }
+          if (response.subtitles) {
+            if (wantSrt) files.push([".srt", response.subtitles]);
+            if (wantVtt) files.push([".vtt", wantSrt ? srtToVtt(response.subtitles) : response.subtitles]);
+          }
+          for (const [fileExt, body] of files) {
+            const target = await unusedPath(dir, stem, fileExt);
+            await writeFile(target, body, "utf8");
+            written.push(target);
+          }
+        }
+
+        const parts = [
+          `Transcribed ${formatDuration(response.usage.seconds)} of audio for ${response.usage.credits} credits.`,
+        ];
+        if (written.length > 0) parts.push("Saved:\n" + written.map((f) => `- ${f}`).join("\n"));
+        if (transcript.length > INLINE_TRANSCRIPT_LIMIT) {
+          parts.push(transcript.slice(0, INLINE_TRANSCRIPT_LIMIT) + "\n[transcript cut here; the saved txt file has all of it]");
+        } else {
+          parts.push(transcript || "(no speech detected)");
+        }
+        if (timestamps && response.words) parts.push("Word timings:\n" + JSON.stringify(response.words));
+        return text(parts.join("\n\n"));
+      } catch (err) {
+        return failure(err);
+      }
+    },
+  );
+
+  server.registerTool(
     "list_voices",
     {
       title: "List voices",
@@ -426,9 +602,13 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
             facts.push(`${m.reference_credits_per_1k_chars} credits per 1000 reference chars`);
           }
           if (m.credits_per_page != null) facts.push(`${m.credits_per_page} credits per page`);
+          if (m.credits_per_hour != null) {
+            facts.push(`${m.credits_per_hour} credits per hour of audio (${(m.credits_per_hour / 60).toFixed(2)} per minute)`);
+          }
           if (m.min_request_credits != null) facts.push(`minimum ${m.min_request_credits} credits per request`);
           if (m.max_chars != null) facts.push(`up to ${m.max_chars} chars per request`);
           if (m.max_pages != null) facts.push(`up to ${m.max_pages} pages`);
+          if (m.max_duration_seconds != null) facts.push(`up to ${Math.round(m.max_duration_seconds / 60)} minutes of audio`);
           if (m.max_bytes != null) facts.push(`up to ${Math.round(m.max_bytes / 1024 / 1024)} MiB`);
           if (m.voices.length > 0) facts.push(`${m.voices.length} voices`);
           if (m.sources) facts.push(`sources: ${m.sources.join(", ")} or auto`);

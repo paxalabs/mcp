@@ -14,6 +14,7 @@ const EXPECTED_TOOLS = [
   "text_to_speech",
   "translate_to_thai",
   "ocr_document",
+  "transcribe_audio",
   "list_voices",
   "list_models",
   "get_account",

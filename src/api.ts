@@ -5,9 +5,11 @@ import { MISSING_KEY_MESSAGE } from "./config.js";
 export const TTS_MODEL = "paxa-tts-flash-v1";
 export const TRANSLATE_MODEL = "paxa-translation-lite-v1";
 export const OCR_MODEL = "paxa-ocr-lite-v1";
+export const STT_MODEL = "paxa-stt-lite-v1-preview";
 
 export const TTS_MAX_CHARS = 5000;
 export const OCR_MAX_BYTES = 10 * 1024 * 1024;
+export const STT_MAX_BYTES = 25 * 1024 * 1024;
 
 const RETRYABLE_CODES = new Set([
   "rate_limited",
@@ -120,13 +122,15 @@ export interface Voice {
 export interface PaxaModel {
   id: string;
   name: string;
-  product: "tts" | "translation" | "ocr";
+  product: "tts" | "translation" | "ocr" | "stt";
   max_chars: number | null;
   max_request_chars: number | null;
   credits_per_1k_chars: number | null;
   reference_credits_per_1k_chars: number | null;
   credits_per_page: number | null;
+  credits_per_hour: number | null;
   max_pages: number | null;
+  max_duration_seconds: number | null;
   max_bytes: number | null;
   formats: string[] | null;
   min_request_credits: number | null;
@@ -166,6 +170,43 @@ export interface OcrRequest {
   document: string;
   model?: string;
   output?: "markdown" | "structured";
+}
+
+export interface SttRequest {
+  /** Base64 of the recording's bytes; the API reads the format and length from the bytes. */
+  audio: string;
+  model?: string;
+  language?: string;
+  timestamps?: "word";
+  subtitles?: "srt" | "vtt";
+  subtitle_line_chars?: number;
+  diarization?: boolean;
+  style?: "verbatim" | "clean";
+  convention?: "spoken" | "written";
+  vocabulary?: string[];
+}
+
+export interface SttWord {
+  text: string;
+  start: number;
+  end: number;
+  speaker?: number;
+}
+
+export interface SttSegment {
+  speaker?: number;
+  text: string;
+  start: number;
+  end: number;
+}
+
+export interface SttResponse {
+  text: string;
+  words?: SttWord[];
+  segments?: SttSegment[];
+  /** The rendered subtitle file, present when the request asked for one. */
+  subtitles?: string;
+  usage: { seconds: number; credits: number };
 }
 
 export interface OcrResponse {
@@ -293,6 +334,25 @@ export class PaxaClient {
       timeoutMs: 300_000,
     });
     return (await res.json()) as TranslateResponse;
+  }
+
+  /**
+   * Transcribe a recording. Hour-long files take minutes, and the API may
+   * answer a long job with status 200 and an error object, so that case is
+   * turned into a PaxaApiError here.
+   */
+  async stt(req: SttRequest): Promise<SttResponse> {
+    const res = await this.request("/v1/stt", {
+      method: "POST",
+      body: { model: STT_MODEL, ...req },
+      idempotent: true,
+      timeoutMs: 600_000,
+    });
+    const body = (await res.json()) as SttResponse & { title?: string; detail?: string };
+    if (typeof body.text !== "string") {
+      throw new PaxaApiError(body.title ?? "unknown", res.status, res.headers.get("x-request-id") ?? undefined, body.detail);
+    }
+    return body;
   }
 
   async ocr(req: OcrRequest): Promise<OcrResponse> {

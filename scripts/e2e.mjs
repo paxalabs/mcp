@@ -45,6 +45,16 @@ const tts = await call("text_to_speech", {
 });
 const savedPath = tts.body.match(/to (\/\S+)/)?.[1];
 
+// Round trip: transcribe the file just synthesized, with every output format (about 0.5 credits)
+if (savedPath) {
+  const stt = await call(
+    "transcribe_audio",
+    { file_path: savedPath, save: ["txt", "json", "srt", "vtt"], timestamps: true, vocabulary: ["Paxa Labs"] },
+    300_000,
+  );
+  if (!/speech/i.test(stt.body)) console.log("WARNING: transcript does not contain the word 'speech'");
+}
+
 // speak: blocking, plays out loud
 await call("speak", { text: "สวัสดีค่ะ ระบบเสียงของ Paxa พร้อมใช้งานแล้วค่ะ" }, 120_000);
 
@@ -85,6 +95,7 @@ if (process.env.TEST_OCR_FILE) {
 // Error paths: bad voice, missing file
 await call("speak", { text: "test", voice: "not-a-real-voice" });
 await call("ocr_document", { file_path: "/tmp/does-not-exist.pdf" });
+await call("transcribe_audio", { file_path: "/tmp/does-not-exist.mp3" });
 
 await call("get_account", {});
 await client.close();

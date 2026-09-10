@@ -62,11 +62,11 @@ const manifest = {
   display_name: "Paxa Labs",
   version: pkg.version,
   description:
-    "Thai and English speech AI: speak out loud, read long content aloud, save speech to files, translate into Thai, and OCR documents.",
+    "Thai and English speech AI: speak out loud, read long content aloud, save speech to files, transcribe recordings, translate into Thai, and OCR documents.",
   long_description:
     "Official Paxa Labs extension. Claude can speak through this machine's speakers, read stories and articles " +
     "aloud as a managed queue with pause, resume, skip, and clear, save speech as mp3, opus, or wav files, " +
-    "translate any language into Thai, and read PDFs and images with OCR.\n\n" +
+    "transcribe recordings into text and subtitles, translate any language into Thai, and read PDFs and images with OCR.\n\n" +
     "Requires a Paxa API key from https://paxalabs.com/app/keys (new accounts include free credits). " +
     "Paid tools spend account credits; every tool description states its price. " +
     "Docs: https://paxalabs.com/docs",

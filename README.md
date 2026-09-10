@@ -15,8 +15,8 @@ your agent, including local audio playback.
 
 An agent connected to this server can speak out loud through your machine's
 speakers, read long content aloud as a managed playback queue, save speech to
-audio files, translate any language into Thai, and read PDFs and images with
-OCR.
+audio files, transcribe recordings with subtitles, translate any language
+into Thai, and read PDFs and images with OCR.
 
 > **Beta.** The tool set is complete and tested end to end, but tool names and
 > behavior may still change before 1.0 as feedback comes in. Report problems at
@@ -70,6 +70,7 @@ into `~/.cursor/mcp.json` or VS Code's MCP settings. Then replace
 | `text_to_speech` | Synthesize speech to an audio file (mp3, opus, wav) without playing it | 15 per 1000 chars |
 | `translate_to_thai` | Translate any language into Thai, with formality, glossary, and context controls | 25 per 1000 chars |
 | `ocr_document` | OCR a local PDF, PNG, JPEG, or WebP into Markdown or structured blocks | 6.5 per page |
+| `transcribe_audio` | Transcribe a local recording (Thai, English, mixed) to text, with optional speaker labels, word timings, and srt or vtt subtitles saved next to it | 8.33 per minute |
 | `list_voices` | The TTS voice roster with character notes | free |
 | `list_models` | Available models, limits, and pricing | free |
 | `get_account` | Credit balance, plan, and rate limits | free |
