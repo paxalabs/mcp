@@ -454,7 +454,11 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
           .array(z.string().max(50))
           .max(50)
           .optional()
-          .describe("Up to 50 names or domain terms to bias recognition toward"),
+          .describe(
+            "Keyword pinning: terms the recording likely contains, spelled the way they should appear in the " +
+              "transcript (product names, people, places, jargon; Thai or English). Up to 50 terms of 50 characters. " +
+              "They bias recognition and are never inserted.",
+          ),
         timestamps: z
           .boolean()
           .optional()
