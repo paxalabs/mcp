@@ -86,6 +86,8 @@ const manifest = {
         PAXA_API_KEY: "${user_config.api_key}",
         PAXA_OUTPUT_DIR: "${user_config.output_dir}",
         PAXA_DEFAULT_VOICE: "${user_config.default_voice}",
+        PAXA_VOCABULARY: "${user_config.vocabulary}",
+        PAXA_VOCABULARY_FILE: "${user_config.vocabulary_file}",
       },
     },
   },
@@ -119,6 +121,19 @@ const manifest = {
       description: "Voice id used when a request does not pick one. Ask for list_voices to see the roster.",
       required: false,
       default: "nomyen",
+    },
+    vocabulary: {
+      type: "string",
+      title: "Pinned vocabulary",
+      description:
+        "Comma-separated names and terms that transcribe_audio should always recognize as written, such as product names.",
+      required: false,
+    },
+    vocabulary_file: {
+      type: "file",
+      title: "Vocabulary file",
+      description: "A text file with one term per line (lines starting with # are comments), pinned on every transcription.",
+      required: false,
     },
   },
 };

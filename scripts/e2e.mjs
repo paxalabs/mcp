@@ -14,6 +14,7 @@ const transport = new StdioClientTransport({
     HOME: process.env.HOME,
     PAXA_API_KEY: KEY,
     PAXA_OUTPUT_DIR: OUT_DIR,
+    PAXA_VOCABULARY: "Paxa Labs",
   },
   stderr: "pipe",
 });
@@ -49,10 +50,11 @@ const savedPath = tts.body.match(/to (\/\S+)/)?.[1];
 if (savedPath) {
   const stt = await call(
     "transcribe_audio",
-    { file_path: savedPath, save: ["txt", "json", "srt", "vtt"], timestamps: true, vocabulary: ["Paxa Labs"] },
+    { file_path: savedPath, save: ["txt", "json", "srt", "vtt"], timestamps: true, vocabulary: ["text to speech"] },
     300_000,
   );
   if (!/speech/i.test(stt.body)) console.log("WARNING: transcript does not contain the word 'speech'");
+  if (!/1 from config/.test(stt.body)) console.log("WARNING: the configured vocabulary was not pinned");
 }
 
 // speak: blocking, plays out loud

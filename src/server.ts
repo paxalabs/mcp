@@ -18,7 +18,7 @@ import {
   type TranslateRequest,
 } from "./api.js";
 import { chunkText } from "./chunk.js";
-import { MISSING_KEY_MESSAGE, type Config } from "./config.js";
+import { MISSING_KEY_MESSAGE, parseVocabulary, type Config } from "./config.js";
 import { SpeechEngine } from "./queue.js";
 
 const TTS_CREDITS_PER_1K = 15;
@@ -63,6 +63,63 @@ function transcriptText(response: SttResponse, diarized: boolean): string {
     return response.segments.map((seg) => `Speaker ${(seg.speaker ?? 0) + 1}: ${seg.text.trim()}`).join("\n");
   }
   return response.text.trim();
+}
+
+const VOCABULARY_MAX_TERMS = 50;
+const VOCABULARY_MAX_CHARS = 50;
+
+interface PinnedVocabulary {
+  terms: string[];
+  fromCall: number;
+  fromConfig: number;
+  dropped: number;
+}
+
+/**
+ * The vocabulary to pin on a transcription: the call's own terms first, then
+ * PAXA_VOCABULARY, then PAXA_VOCABULARY_FILE (read now, so edits apply without
+ * a restart), deduplicated and cut at the API's limit. A term over the length
+ * limit or an unreadable file is a configuration error, reported before any
+ * credits are spent.
+ */
+async function pinnedVocabulary(config: Config, callTerms: string[] | undefined): Promise<PinnedVocabulary> {
+  const sources: Array<[string, string[]]> = [
+    ["the call", callTerms ?? []],
+    ["PAXA_VOCABULARY", config.vocabulary],
+  ];
+  if (config.vocabularyFile) {
+    const path = resolve(config.vocabularyFile);
+    let body: string;
+    try {
+      body = await readFile(path, "utf8");
+    } catch (err) {
+      const why = err instanceof Error ? err.message : String(err);
+      throw new Error(`PAXA_VOCABULARY_FILE points at ${path}, which could not be read: ${why}`);
+    }
+    sources.push([`PAXA_VOCABULARY_FILE (${path})`, parseVocabulary(body, "\n")]);
+  }
+
+  const seen = new Set<string>();
+  const result: PinnedVocabulary = { terms: [], fromCall: 0, fromConfig: 0, dropped: 0 };
+  for (const [source, list] of sources) {
+    for (const term of list) {
+      if (term.length > VOCABULARY_MAX_CHARS) {
+        throw new Error(
+          `Vocabulary term "${term}" from ${source} is ${term.length} characters; the limit is ${VOCABULARY_MAX_CHARS}.`,
+        );
+      }
+      if (seen.has(term)) continue;
+      seen.add(term);
+      if (result.terms.length >= VOCABULARY_MAX_TERMS) {
+        result.dropped++;
+        continue;
+      }
+      result.terms.push(term);
+      if (source === "the call") result.fromCall++;
+      else result.fromConfig++;
+    }
+  }
+  return result;
 }
 
 function formatDuration(seconds: number): string {
@@ -428,7 +485,8 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         "up to 60 minutes and 25 MiB) with Paxa STT. The transcript comes back inline, so nothing needs " +
         "to be read from disk afterwards; optionally it is also saved as txt, json (with word timings " +
         "and segments), srt, or vtt, named after the recording. Existing files are never overwritten. " +
-        "Detects the language, handles code-switching, and can label speakers. Costs " +
+        "Detects the language, handles code-switching, and can label speakers. Terms configured in " +
+        "PAXA_VOCABULARY or PAXA_VOCABULARY_FILE are pinned on every call. Costs " +
         `${STT_CREDITS_PER_MINUTE} credits per minute of audio (0.1 minimum); subtitles and word timings ` +
         "cost nothing extra. Long recordings take minutes to process.",
       inputSchema: {
@@ -457,7 +515,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
           .describe(
             "Keyword pinning: terms the recording likely contains, spelled the way they should appear in the " +
               "transcript (product names, people, places, jargon; Thai or English). Up to 50 terms of 50 characters. " +
-              "They bias recognition and are never inserted.",
+              "They bias recognition and are never inserted. Added to any terms configured in PAXA_VOCABULARY or PAXA_VOCABULARY_FILE.",
           ),
         timestamps: z
           .boolean()
@@ -498,6 +556,8 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
           return failure(`${path} is not a supported recording type (mp3, wav, flac, ogg, m4a, aac, webm).`);
         }
 
+        const pinned = await pinnedVocabulary(config, vocabulary);
+
         const formats = new Set(save ?? []);
         const wantSrt = formats.has("srt");
         const wantVtt = formats.has("vtt");
@@ -506,7 +566,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         if (diarization) request.diarization = true;
         if (style) request.style = style;
         if (convention) request.convention = convention;
-        if (vocabulary && vocabulary.length > 0) request.vocabulary = vocabulary;
+        if (pinned.terms.length > 0) request.vocabulary = pinned.terms;
         if (timestamps || formats.has("json")) request.timestamps = "word";
         // One rendered file covers both subtitle formats: VTT is derived from SRT when both are wanted.
         if (wantSrt || wantVtt) request.subtitles = wantSrt ? "srt" : "vtt";
@@ -549,6 +609,12 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         const parts = [
           `Transcribed ${formatDuration(response.usage.seconds)} of audio for ${response.usage.credits} credits.`,
         ];
+        if (pinned.terms.length > 0) {
+          let line = `Pinned ${pinned.terms.length} term(s)`;
+          if (pinned.fromConfig > 0) line += ` (${pinned.fromCall} from the call, ${pinned.fromConfig} from config)`;
+          if (pinned.dropped > 0) line += `; ${pinned.dropped} dropped over the API's limit of ${VOCABULARY_MAX_TERMS}`;
+          parts.push(line + ".");
+        }
         if (written.length > 0) parts.push("Saved:\n" + written.map((f) => `- ${f}`).join("\n"));
         if (transcript.length > INLINE_TRANSCRIPT_LIMIT) {
           parts.push(transcript.slice(0, INLINE_TRANSCRIPT_LIMIT) + "\n[transcript cut here; the saved txt file has all of it]");

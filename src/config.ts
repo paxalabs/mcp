@@ -4,6 +4,18 @@ export interface Config {
   baseUrl: string;
   outputDir: string;
   defaultVoice: string;
+  /** Terms pinned on every transcription, from PAXA_VOCABULARY (comma-separated). */
+  vocabulary: string[];
+  /** A file with one term per line, also pinned on every transcription. Read at call time, so edits apply without a restart. */
+  vocabularyFile: string | undefined;
+}
+
+/** Split a vocabulary list on the given separator, dropping blanks and, for files, lines that start with "#". */
+export function parseVocabulary(body: string, separator: "," | "\n"): string[] {
+  return body
+    .split(separator)
+    .map((term) => term.trim())
+    .filter((term) => term.length > 0 && !term.startsWith("#"));
 }
 
 export const MISSING_KEY_MESSAGE =
@@ -16,5 +28,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const baseUrl = (env.PAXA_BASE_URL?.trim() || "https://api.paxalabs.com").replace(/\/+$/, "");
   const outputDir = env.PAXA_OUTPUT_DIR?.trim() || process.cwd();
   const defaultVoice = env.PAXA_DEFAULT_VOICE?.trim() || "nomyen";
-  return { apiKey, baseUrl, outputDir, defaultVoice };
+  const vocabulary = parseVocabulary(env.PAXA_VOCABULARY ?? "", ",");
+  const vocabularyFile = env.PAXA_VOCABULARY_FILE?.trim() || undefined;
+  return { apiKey, baseUrl, outputDir, defaultVoice, vocabulary, vocabularyFile };
 }

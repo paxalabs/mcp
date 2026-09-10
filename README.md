@@ -195,7 +195,15 @@ Use the absolute path to `paxa` in the hook command if that happens.
 | `PAXA_API_KEY` | yes | | Your API key. The server starts without it, but every tool that calls the API then fails with setup instructions the agent can relay |
 | `PAXA_OUTPUT_DIR` | no | working directory | Where `text_to_speech` saves files |
 | `PAXA_DEFAULT_VOICE` | no | `nomyen` | Voice used when a tool call does not pick one. English text usually sounds best with an English voice (`donut`, `cookie`, `toast`, `latte`) |
+| `PAXA_VOCABULARY` | no | | Keyword pinning for `transcribe_audio`: comma-separated names and terms the transcript should spell as written (product names, people, jargon) |
+| `PAXA_VOCABULARY_FILE` | no | | A text file with one term per line (`#` starts a comment), also pinned on every transcription. Read at call time, so edits apply without a restart |
 | `PAXA_BASE_URL` | no | `https://api.paxalabs.com` | API origin override |
+
+To pin a different list per project, set the vocabulary variables in a
+project-scope server entry (Claude Code's project scope, `.cursor/mcp.json`,
+`.vscode/mcp.json`). On each call the tool takes the call's own terms first,
+then the configured ones, deduplicated and cut at the API's limit of 50, and
+reports how many it pinned.
 
 ## Playback support
 
