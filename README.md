@@ -10,13 +10,14 @@
 [![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect/mcp/install?name=paxa&config=%7B%22name%22%3A%22paxa%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40paxalabs/mcp%22%5D%2C%22env%22%3A%7B%22PAXA_API_KEY%22%3A%22pxa_your_key_here%22%7D%7D)
 
 Official [MCP](https://modelcontextprotocol.io) server for the
-[Paxa Labs API](https://paxalabs.com/docs): Thai and English speech AI for
+[Paxa Labs API](https://paxalabs.com/docs): Thai, English, and Mandarin Chinese speech AI for
 your agent, including local audio playback.
 
 An agent connected to this server can speak out loud through your machine's
 speakers, read long content aloud as a managed playback queue, save speech to
 audio files, transcribe recordings with subtitles, translate any language
-into Thai, and read PDFs and images with OCR.
+into Thai, read PDFs and images with OCR, and extract typed fields from
+documents.
 
 > **Beta.** The tool set is complete and tested end to end, but tool names and
 > behavior may still change before 1.0 as feedback comes in. Report problems at
@@ -70,6 +71,7 @@ into `~/.cursor/mcp.json` or VS Code's MCP settings. Then replace
 | `text_to_speech` | Synthesize speech to an audio file (mp3, opus, wav) without playing it | 15 per 1000 chars |
 | `translate_to_thai` | Translate any language into Thai, with formality, glossary, and context controls | 25 per 1000 chars |
 | `ocr_document` | OCR a local PDF, PNG, JPEG, or WebP into Markdown or structured blocks | 6.5 per page |
+| `extract_fields` | Fill a schema of typed fields (Thai IDs, dates, amounts, banks, line items) from a local PDF or image; every value is printed in the document or null with the reason | 13 per page (19.5 for schemas over 50 fields) |
 | `transcribe_audio` | Transcribe a local recording (Thai, English, mixed) to text, with optional speaker labels, word timings, and srt or vtt subtitles saved next to it | 8.33 per minute |
 | `list_voices` | The TTS voice roster with character notes | free |
 | `list_models` | Available models, limits, and pricing | free |
@@ -194,7 +196,7 @@ Use the absolute path to `paxa` in the hook command if that happens.
 | --- | --- | --- | --- |
 | `PAXA_API_KEY` | yes | | Your API key. The server starts without it, but every tool that calls the API then fails with setup instructions the agent can relay |
 | `PAXA_OUTPUT_DIR` | no | working directory | Where `text_to_speech` saves files |
-| `PAXA_DEFAULT_VOICE` | no | `nomyen` | Voice used when a tool call does not pick one. English text usually sounds best with an English voice (`donut`, `cookie`, `toast`, `latte`) |
+| `PAXA_DEFAULT_VOICE` | no | `nomyen` | Voice used when a tool call does not pick one. Every voice is designed around one language. English text usually sounds best with an English voice (`donut`, `cookie`, `toast`, `latte`, `espresso`, `mocha`), Mandarin with `taohuay` or `oolong` |
 | `PAXA_VOCABULARY` | no | | Keyword pinning for `transcribe_audio`: comma-separated names and terms the transcript should spell as written (product names, people, jargon) |
 | `PAXA_VOCABULARY_FILE` | no | | A text file with one term per line (`#` starts a comment), also pinned on every transcription. Read at call time, so edits apply without a restart |
 | `PAXA_BASE_URL` | no | `https://api.paxalabs.com` | API origin override |

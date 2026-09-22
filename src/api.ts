@@ -6,10 +6,12 @@ export const TTS_MODEL = "paxa-tts-flash-v1";
 export const TRANSLATE_MODEL = "paxa-translation-lite-v1";
 export const OCR_MODEL = "paxa-ocr-lite-v1";
 export const STT_MODEL = "paxa-stt-lite-v1-preview";
+export const EXTRACT_MODEL = "paxa-doc-extract-v1";
 
 export const TTS_MAX_CHARS = 5000;
 export const OCR_MAX_BYTES = 10 * 1024 * 1024;
 export const STT_MAX_BYTES = 25 * 1024 * 1024;
+export const EXTRACT_MAX_BYTES = 10 * 1024 * 1024;
 
 const RETRYABLE_CODES = new Set([
   "rate_limited",
@@ -50,7 +52,11 @@ const HINTS: Record<string, string> = {
   document_invalid: "The file could not be read as a PDF, PNG, JPEG, or WebP; nothing was charged.",
   document_password_required:
     "The PDF needs a password to open; nothing was charged. Use a copy that opens without a password.",
-  too_many_pages: "The document has more pages than the model accepts (50); nothing was charged. Split it.",
+  too_many_pages:
+    "The document has more pages than the model accepts (50 for OCR, 20 for extraction); nothing was charged. Split it.",
+  schema_invalid:
+    "The extraction schema is outside the dialect; nothing was charged. Fix the named field, and see " +
+    "https://paxalabs.com/docs/extraction for every type and its keys.",
   document_too_large: "The document exceeds the size limit (10 MiB); nothing was charged. Compress or split it.",
   provider_error: "The upstream model failed; the charge was refunded. Retry.",
   provider_unavailable: "The model is unavailable right now; nothing was charged. Retry later.",
@@ -80,6 +86,8 @@ export class PaxaApiError extends Error {
     readonly status: number,
     readonly requestId: string | undefined,
     detail?: string,
+    /** Where a refused extraction schema went wrong: the field path (empty for the root) and a stable reason code. */
+    readonly schemaProblem?: { path: string; reason: string },
   ) {
     super(detail && detail.length > 0 ? detail : code);
   }
@@ -93,6 +101,10 @@ export class PaxaApiError extends Error {
     if (this.message !== this.code) out += `: ${this.message}`;
     if (this.requestId) out += ` [request id ${this.requestId}]`;
     out += ".";
+    if (this.schemaProblem) {
+      const where = this.schemaProblem.path ? `field "${this.schemaProblem.path}"` : "the schema root";
+      out += ` The problem is at ${where}: ${this.schemaProblem.reason}.`;
+    }
     const hint = hintFor(this.code, this.status);
     if (hint) out += ` ${hint}`;
     else if (this.retryable) out += " This error is retryable.";
@@ -122,15 +134,19 @@ export interface Voice {
 export interface PaxaModel {
   id: string;
   name: string;
-  product: "tts" | "translation" | "ocr" | "stt";
+  product: "tts" | "translation" | "ocr" | "stt" | "extraction";
   max_chars: number | null;
   max_request_chars: number | null;
   credits_per_1k_chars: number | null;
   reference_credits_per_1k_chars: number | null;
   credits_per_page: number | null;
+  large_schema_credits_per_page: number | null;
+  large_schema_min_leaves: number | null;
+  max_leaves: number | null;
   credits_per_hour: number | null;
   max_pages: number | null;
   max_duration_seconds: number | null;
+  diarization_limit_seconds: number | null;
   max_bytes: number | null;
   formats: string[] | null;
   min_request_credits: number | null;
@@ -207,6 +223,32 @@ export interface SttResponse {
   /** The rendered subtitle file, present when the request asked for one. */
   subtitles?: string;
   usage: { seconds: number; credits: number };
+}
+
+/** The extraction schema dialect, written by the caller and validated by the API. */
+export interface ExtractSchema {
+  fields: Record<string, unknown>;
+}
+
+export interface ExtractRequest {
+  /** Base64 of a PDF, PNG, JPEG, or WebP file. */
+  document: string;
+  model?: string;
+  schema: ExtractSchema;
+  include_pages?: boolean;
+  include_evidence?: boolean;
+}
+
+export interface ExtractResponse {
+  status: "complete" | "incomplete";
+  fields: Record<string, unknown>;
+  missing: string[];
+  unverified: Array<{ path: string; reason: string }>;
+  truncated: string[];
+  assumed: Array<{ path: string; printed: string; read_as: number }>;
+  evidence?: Record<string, string>;
+  pages?: Array<{ page: number; markdown: string }>;
+  usage: { pages: number; leaves: number; credits: number };
 }
 
 export interface OcrResponse {
@@ -288,10 +330,13 @@ export class PaxaClient {
       let detail: string | undefined;
       if ((res.headers.get("content-type") ?? "").includes("json")) {
         const body = (await res.json().catch(() => undefined)) as
-          | { title?: string; detail?: string }
+          | { title?: string; detail?: string; path?: string; reason?: string }
           | undefined;
         if (body?.title) code = body.title;
         detail = body?.detail;
+        if (typeof body?.reason === "string") {
+          throw new PaxaApiError(code, res.status, requestId, detail, { path: body.path ?? "", reason: body.reason });
+        }
       }
       throw new PaxaApiError(code, res.status, requestId, detail);
     }
@@ -353,6 +398,17 @@ export class PaxaClient {
       throw new PaxaApiError(body.title ?? "unknown", res.status, res.headers.get("x-request-id") ?? undefined, body.detail);
     }
     return body;
+  }
+
+  /** Fill a schema of typed fields from a document. A multi-page document can take minutes. */
+  async extract(req: ExtractRequest): Promise<ExtractResponse> {
+    const res = await this.request("/v1/extract", {
+      method: "POST",
+      body: { model: EXTRACT_MODEL, ...req },
+      idempotent: true,
+      timeoutMs: 600_000,
+    });
+    return (await res.json()) as ExtractResponse;
   }
 
   async ocr(req: OcrRequest): Promise<OcrResponse> {

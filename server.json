@@ -2,13 +2,13 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "com.paxalabs/mcp",
   "title": "Paxa Labs",
-  "description": "Thai and English speech AI: TTS with local playback, transcription, translation to Thai, and OCR",
+  "description": "Thai, English, Mandarin speech AI: TTS with playback, transcription, translation, OCR, extraction",
   "websiteUrl": "https://paxalabs.com/docs",
   "repository": {
     "url": "https://github.com/paxalabs/mcp",
     "source": "github"
   },
-  "version": "0.1.0-beta.9",
+  "version": "0.1.0-beta.10",
   "icons": [
     {
       "src": "https://raw.githubusercontent.com/paxalabs/mcp/main/assets/icon.png",
@@ -21,7 +21,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@paxalabs/mcp",
-      "version": "0.1.0-beta.9",
+      "version": "0.1.0-beta.10",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"

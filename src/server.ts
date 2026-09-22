@@ -7,6 +7,8 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 import {
+  EXTRACT_MAX_BYTES,
+  type ExtractRequest,
   OCR_MAX_BYTES,
   STT_MAX_BYTES,
   type SttRequest,
@@ -122,6 +124,23 @@ async function pinnedVocabulary(config: Config, callTerms: string[] | undefined)
   return result;
 }
 
+/** How many leaves in an extraction schema are marked required, arrays counted once. Tolerant of shapes the API will refuse. */
+function countRequiredFields(fields: unknown): number {
+  if (!fields || typeof fields !== "object") return 0;
+  let count = 0;
+  for (const def of Object.values(fields as Record<string, unknown>)) {
+    if (!def || typeof def !== "object") continue;
+    const d = def as { type?: unknown; required?: unknown; fields?: unknown; items?: unknown };
+    if (d.type === "object") count += countRequiredFields(d.fields);
+    else if (d.type === "array") {
+      const items = d.items as { type?: unknown; fields?: unknown; required?: unknown } | undefined;
+      if (items?.type === "object") count += countRequiredFields(items.fields);
+      else if (items?.required === true) count++;
+    } else if (d.required === true) count++;
+  }
+  return count;
+}
+
 function formatDuration(seconds: number): string {
   if (seconds < 60) return `${seconds.toFixed(1)} s`;
   const minutes = Math.floor(seconds / 60);
@@ -134,8 +153,10 @@ function estimateTtsCredits(chars: number): number {
 
 /** Shared guidance on choosing a voice; a hint, since some users prefer Thai-accented English. */
 export const VOICE_GUIDANCE =
-  "English text usually sounds best with one of the English voices (donut, cookie, toast, latte); " +
-  "some users prefer Thai-accented English, so follow the user's preference when they have one.";
+  "Every voice is designed around one language (Thai, English, or Mandarin Chinese) and reads the others " +
+  "with an accent. English text usually sounds best with an English voice (donut, cookie, toast, latte, " +
+  "espresso, mocha) and Mandarin with taohuay or oolong; some users prefer Thai-accented English, so " +
+  "follow the user's preference when they have one.";
 
 function voiceHint(config: Config): string {
   return `Voice id from list_voices (default "${config.defaultVoice}", a Thai voice). ${VOICE_GUIDANCE}`;
@@ -161,12 +182,13 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
     },
     {
       instructions:
-        "Paxa Labs API server (Thai and English speech AI). speak plays a short line out loud on " +
+        "Paxa Labs API server (Thai, English, and Mandarin Chinese speech AI). speak plays a short line out loud on " +
         "this machine; queue_speech reads long content aloud continuously; control_playback inspects and " +
         "controls the shared audio queue; text_to_speech writes an audio file without playing it; " +
         "play_audio replays a local audio file; translate_to_thai translates any language into " +
-        "Thai; ocr_document runs OCR on a local PDF or image; transcribe_audio turns a local " +
-        "recording into text and subtitles. Paid tools spend account credits " +
+        "Thai; ocr_document runs OCR on a local PDF or image; extract_fields fills a schema of typed " +
+        "fields from a local document; transcribe_audio turns a local recording into text and " +
+        "subtitles. Paid tools spend account credits " +
         "(check with get_account)." +
         keyWarning,
     },
@@ -476,12 +498,124 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
   );
 
   server.registerTool(
+    "extract_fields",
+    {
+      title: "Extract fields from a document",
+      annotations: { title: "Extract fields from a document", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      description:
+        "Extract typed fields from a local PDF, PNG, JPEG, or WebP document (up to 20 pages and 10 MiB) with " +
+        "Paxa Document Extraction. You write a schema of fields; every value returned is text printed in the " +
+        "document, read as the field's type, or null with the reason. Nothing is inferred or looked up. Built " +
+        "for Thai documents (receipts, tax invoices, forms, IDs) and fine on English ones. Costs 13 credits per " +
+        "page for a schema of up to 50 leaf fields and 19.5 per page for 51 to 100; the page reading and the " +
+        "evidence spans cost nothing extra. A schema the API refuses costs nothing and names the field and reason. " +
+        "The schema parameter summarizes the dialect; https://paxalabs.com/docs/extraction has every type and key.",
+      inputSchema: {
+        file_path: z.string().describe("Path to a local PDF, PNG, JPEG, or WebP file"),
+        schema: z
+          .object({ fields: z.record(z.string(), z.unknown()) })
+          .describe(
+            "Prefer the most specific type for each field: a specific type verifies the printed value (a date must " +
+              "parse, a thai_id must pass its check digit, a bank must be a real bank) and returns a normalized form, " +
+              'while "string" only copies text. Give each field a short "description" of what it is on the page. ' +
+              'Example: {"fields":{"seller":{"type":"string","required":true,"description":"Shop name as printed at the top"},' +
+              '"total":{"type":"number","required":true},"issued_on":{"type":"date"},"tax_id":{"type":"thai_id"},' +
+              '"items":{"type":"array","max_items":10,"items":{"type":"object","fields":{"name":{"type":"string"},' +
+              '"amount":{"type":"number"}}}}}}. ' +
+              'Shape: {"fields": {name: definition, ...}}. A definition has "type", optional "required" (boolean), optional ' +
+              '"description" (up to 200 chars, the one piece of prose the model reads: put the field\'s meaning there, ' +
+              'e.g. "Seller name as printed at the top"), plus the keys its type offers. Leaf types: string (pattern, ' +
+              "min_length, max_length), integer and number (min, max, decimals), date (returned as YYYY-MM-DD; min, max, " +
+              "not_future, year: recent|strict|be|ce), time, enum (values 1 to 50, aliases, strict; the only field that " +
+              "may be a judgment, such as the kind of document), id (digits, check: none|thai_mod11|luhn), thai_id, " +
+              "email, phone (format e164|national), postal_code, province, bank, insurer, card_scheme, payment_method, " +
+              "legal_form, currency, unit (closed sets with a format key), amount_words. Containers: object (fields) and " +
+              "array (items: a leaf or an object, and a required max_items 1 to 200; no array inside an array). At most " +
+              "3 containers below the root. Names are 1 to 64 letters, digits, and underscores. The leaf count is every " +
+              "leaf once plus each array's leaves once per element it is sized for, up to 100. Full reference for every " +
+              "type and its keys, with worked examples: https://paxalabs.com/docs/extraction (Markdown at " +
+              "https://paxalabs.com/docs/extraction.md).",
+          ),
+        include_pages: z.boolean().optional().describe("Also return each page's text as Markdown, the reading the fields came from. Free."),
+        include_evidence: z.boolean().optional().describe("Also return, per field path, the printed span the value was read from. Free."),
+        output_path: z
+          .string()
+          .optional()
+          .describe(
+            "Save the full JSON response here. Relative paths resolve against PAXA_OUTPUT_DIR (or the working directory). An existing file is never overwritten.",
+          ),
+      },
+    },
+    async ({ file_path, schema, include_pages, include_evidence, output_path }) => {
+      try {
+        const path = resolve(file_path);
+        const info = await stat(path).catch(() => null);
+        if (!info?.isFile()) return failure(`No file found at ${path}`);
+        if (info.size > EXTRACT_MAX_BYTES) {
+          return failure(
+            `${path} is ${(info.size / 1024 / 1024).toFixed(1)} MiB; the extraction limit is 10 MiB per file.`,
+          );
+        }
+        const ext = extname(path).toLowerCase();
+        if (ext && !OCR_EXTENSIONS.has(ext)) {
+          return failure(`${path} is not a supported document type (PDF, PNG, JPEG, WebP).`);
+        }
+
+        const request: ExtractRequest = { document: (await readFile(path)).toString("base64"), schema };
+        if (include_pages) request.include_pages = true;
+        if (include_evidence) request.include_evidence = true;
+        const response = await client.extract(request);
+
+        const parts = [
+          `Status: ${response.status}. Read ${response.usage.pages} page(s) against ${response.usage.leaves} leaf ` +
+            `field(s) for ${response.usage.credits} credits.`,
+        ];
+        if (output_path) {
+          const given = isAbsolute(output_path) ? output_path : join(config.outputDir, output_path);
+          const target = await unusedPath(dirname(given), basename(given, extname(given)), extname(given) || ".json");
+          await mkdir(dirname(target), { recursive: true });
+          await writeFile(target, JSON.stringify(response, null, 2) + "\n", "utf8");
+          parts.push(`Saved the full response to ${target}`);
+        }
+        parts.push("Fields:\n" + JSON.stringify(response.fields, null, 2));
+        if (response.missing.length > 0) parts.push(`Missing (required, nothing read): ${response.missing.join(", ")}`);
+        if (response.unverified.length > 0) {
+          parts.push(
+            "Unverified (a printed span failed the field's type, delivered as null):\n" +
+              response.unverified.map((u) => `- ${u.path}: ${u.reason}`).join("\n"),
+          );
+        }
+        if (response.truncated.length > 0) {
+          parts.push(`Truncated (the document had more elements; raise max_items to read them): ${response.truncated.join(", ")}`);
+        }
+        if (response.assumed.length > 0) {
+          parts.push(
+            "Assumed (two-digit years):\n" +
+              response.assumed.map((a) => `- ${a.path}: printed ${a.printed}, read as ${a.read_as}`).join("\n"),
+          );
+        }
+        const required = countRequiredFields(schema.fields);
+        if (response.status === "incomplete" && required > 0 && response.missing.length * 2 >= required) {
+          parts.push("Most required fields are missing: this may not be the kind of document the schema describes.");
+        }
+        if (response.evidence) parts.push("Evidence:\n" + JSON.stringify(response.evidence, null, 2));
+        if (response.pages) {
+          parts.push(response.pages.map((p) => `[page ${p.page}]\n\n${p.markdown}`).join("\n\n"));
+        }
+        return text(parts.join("\n\n"));
+      } catch (err) {
+        return failure(err);
+      }
+    },
+  );
+
+  server.registerTool(
     "transcribe_audio",
     {
       title: "Transcribe a recording",
       annotations: { title: "Transcribe a recording", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
       description:
-        "Transcribe a local recording of Thai or English speech (mp3, wav, flac, ogg, m4a, aac, or webm; " +
+        "Transcribe a local recording of speech, Thai or any other language, code-switching included (mp3, wav, flac, ogg, m4a, aac, or webm; " +
         "up to 60 minutes and 25 MiB) with Paxa STT. The transcript comes back inline, so nothing needs " +
         "to be read from disk afterwards; optionally it is also saved as txt, json (with word timings " +
         "and segments), srt, or vtt, named after the recording. Existing files are never overwritten. " +
@@ -499,7 +633,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         diarization: z
           .boolean()
           .optional()
-          .describe("Label speakers. The transcript is then returned as one line per turn, and subtitle cues never cross a speaker change."),
+          .describe("Label speakers, for recordings under 9 minutes. The transcript is then returned as one line per turn, and subtitle cues never cross a speaker change."),
         style: z
           .enum(["verbatim", "clean"])
           .optional()
@@ -672,6 +806,10 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
             facts.push(`${m.reference_credits_per_1k_chars} credits per 1000 reference chars`);
           }
           if (m.credits_per_page != null) facts.push(`${m.credits_per_page} credits per page`);
+          if (m.large_schema_credits_per_page != null && m.large_schema_min_leaves != null) {
+            facts.push(`${m.large_schema_credits_per_page} credits per page from ${m.large_schema_min_leaves} leaf fields`);
+          }
+          if (m.max_leaves != null) facts.push(`up to ${m.max_leaves} leaf fields per schema`);
           if (m.credits_per_hour != null) {
             facts.push(`${m.credits_per_hour} credits per hour of audio (${(m.credits_per_hour / 60).toFixed(2)} per minute)`);
           }
@@ -679,6 +817,9 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
           if (m.max_chars != null) facts.push(`up to ${m.max_chars} chars per request`);
           if (m.max_pages != null) facts.push(`up to ${m.max_pages} pages`);
           if (m.max_duration_seconds != null) facts.push(`up to ${Math.round(m.max_duration_seconds / 60)} minutes of audio`);
+          if (m.diarization_limit_seconds != null) {
+            facts.push(`speaker labels for recordings under ${Math.round(m.diarization_limit_seconds / 60)} minutes`);
+          }
           if (m.max_bytes != null) facts.push(`up to ${Math.round(m.max_bytes / 1024 / 1024)} MiB`);
           if (m.voices.length > 0) facts.push(`${m.voices.length} voices`);
           if (m.sources) facts.push(`sources: ${m.sources.join(", ")} or auto`);

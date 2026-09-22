@@ -92,12 +92,27 @@ await call("translate_to_thai", {
 // OCR (set TEST_OCR_FILE to a local PDF or image; costs 6.5 credits per page)
 if (process.env.TEST_OCR_FILE) {
   await call("ocr_document", { file_path: process.env.TEST_OCR_FILE }, 300_000);
+  // Extraction on the same file with a generic schema (13 credits per page)
+  await call(
+    "extract_fields",
+    {
+      file_path: process.env.TEST_OCR_FILE,
+      schema: {
+        fields: {
+          title: { type: "string", description: "The document's title or main heading" },
+          date: { type: "date", description: "The main date printed on the document" },
+        },
+      },
+    },
+    600_000,
+  );
 }
 
 // Error paths: bad voice, missing file
 await call("speak", { text: "test", voice: "not-a-real-voice" });
 await call("ocr_document", { file_path: "/tmp/does-not-exist.pdf" });
 await call("transcribe_audio", { file_path: "/tmp/does-not-exist.mp3" });
+await call("extract_fields", { file_path: "/tmp/does-not-exist.pdf", schema: { fields: { x: { type: "string" } } } });
 
 await call("get_account", {});
 await client.close();
