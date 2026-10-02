@@ -16,6 +16,7 @@ const EXPECTED_TOOLS = [
   "ocr_document",
   "extract_fields",
   "transcribe_audio",
+  "send_feedback",
   "list_voices",
   "list_models",
   "get_account",

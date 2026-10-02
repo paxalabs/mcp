@@ -114,11 +114,15 @@ export class PaxaApiError extends Error {
 
 export type AudioFormat = "mp3" | "opus" | "wav";
 
+export type TtsLanguage = "auto" | "th" | "en" | "zh";
+
 export interface TtsRequest {
   text: string;
   voice: string;
   format?: AudioFormat;
   model?: string;
+  /** How codes, digits, and symbols are read. "auto" (the default) works it out from the text. */
+  language?: TtsLanguage;
 }
 
 export interface Voice {
@@ -127,8 +131,36 @@ export interface Voice {
   gender: string | null;
   language: string | null;
   accent: string | null;
+  /** An experimental voice keeps its id while its delivery is still being tuned. */
+  experimental?: boolean;
+  /** Bracketed tags such as [happy] the voice reads from the text; empty for a voice that skips them. */
+  emotion_tags?: string[];
   description: string | null;
   model: string;
+}
+
+/** Set on every JSON response so a tool can quote it, and send_feedback can point at it. */
+export interface WithRequestId {
+  requestId?: string;
+}
+
+export type FeedbackKind = "model" | "api" | "platform" | "other";
+
+export interface FeedbackRequest {
+  kind: FeedbackKind;
+  rating?: "good" | "bad";
+  message?: string;
+  request_ids?: string[];
+  example?: { input?: string; output?: string; expected?: string };
+}
+
+export interface FeedbackResponse {
+  id: string;
+  kind: FeedbackKind;
+  rating: "good" | "bad" | null;
+  status: "open" | "resolved";
+  resolution: string | null;
+  created_at: string;
 }
 
 export interface PaxaModel {
@@ -371,14 +403,28 @@ export class PaxaClient {
     return res.body;
   }
 
-  async translate(req: TranslateRequest): Promise<TranslateResponse> {
+  /** Parse a JSON body and attach the response's x-request-id. */
+  private async json<T>(res: Response): Promise<T & WithRequestId> {
+    const body = (await res.json()) as T & WithRequestId;
+    const id = res.headers.get("x-request-id");
+    if (id) body.requestId = id;
+    return body;
+  }
+
+  async translate(req: TranslateRequest): Promise<TranslateResponse & WithRequestId> {
     const res = await this.request("/v1/translate", {
       method: "POST",
       body: { model: TRANSLATE_MODEL, ...req },
       idempotent: true,
       timeoutMs: 300_000,
     });
-    return (await res.json()) as TranslateResponse;
+    return this.json<TranslateResponse>(res);
+  }
+
+  /** Report a wrong output or a problem to the Paxa team. Free, no idempotency key, no credits. */
+  async feedback(req: FeedbackRequest): Promise<FeedbackResponse & WithRequestId> {
+    const res = await this.request("/v1/feedback", { method: "POST", body: req, timeoutMs: 60_000 });
+    return this.json<FeedbackResponse>(res);
   }
 
   /**
@@ -386,39 +432,39 @@ export class PaxaClient {
    * answer a long job with status 200 and an error object, so that case is
    * turned into a PaxaApiError here.
    */
-  async stt(req: SttRequest): Promise<SttResponse> {
+  async stt(req: SttRequest): Promise<SttResponse & WithRequestId> {
     const res = await this.request("/v1/stt", {
       method: "POST",
       body: { model: STT_MODEL, ...req },
       idempotent: true,
       timeoutMs: 600_000,
     });
-    const body = (await res.json()) as SttResponse & { title?: string; detail?: string };
+    const body = await this.json<SttResponse & { title?: string; detail?: string }>(res);
     if (typeof body.text !== "string") {
-      throw new PaxaApiError(body.title ?? "unknown", res.status, res.headers.get("x-request-id") ?? undefined, body.detail);
+      throw new PaxaApiError(body.title ?? "unknown", res.status, body.requestId, body.detail);
     }
     return body;
   }
 
   /** Fill a schema of typed fields from a document. A multi-page document can take minutes. */
-  async extract(req: ExtractRequest): Promise<ExtractResponse> {
+  async extract(req: ExtractRequest): Promise<ExtractResponse & WithRequestId> {
     const res = await this.request("/v1/extract", {
       method: "POST",
       body: { model: EXTRACT_MODEL, ...req },
       idempotent: true,
       timeoutMs: 600_000,
     });
-    return (await res.json()) as ExtractResponse;
+    return this.json<ExtractResponse>(res);
   }
 
-  async ocr(req: OcrRequest): Promise<OcrResponse> {
+  async ocr(req: OcrRequest): Promise<OcrResponse & WithRequestId> {
     const res = await this.request("/v1/ocr", {
       method: "POST",
       body: { model: OCR_MODEL, ...req },
       idempotent: true,
       timeoutMs: 300_000,
     });
-    return (await res.json()) as OcrResponse;
+    return this.json<OcrResponse>(res);
   }
 
   async voices(): Promise<Voice[]> {

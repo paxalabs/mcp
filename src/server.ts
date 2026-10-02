@@ -17,13 +17,21 @@ import {
   PaxaClient,
   TTS_MAX_CHARS,
   type AudioFormat,
+  type FeedbackRequest,
+  type TtsLanguage,
   type TranslateRequest,
 } from "./api.js";
 import { chunkText } from "./chunk.js";
 import { MISSING_KEY_MESSAGE, parseVocabulary, type Config } from "./config.js";
 import { SpeechEngine } from "./queue.js";
 
-const TTS_CREDITS_PER_1K = 15;
+const TTS_CREDITS_PER_1K = 10;
+const TTS_LANGUAGE_HINT =
+  'How codes, digits, and symbols are read: "th", "en", or "zh". Words keep the language of their script. ' +
+  'Default "auto" works it out from the text; set it when a code such as AB2039 should be spelled in a particular language.';
+const EMOTION_TAG_HINT =
+  "On the experimental voices khanomchan and kaprao, a bracketed emotion tag written into the text, such as " +
+  "[happy] or [sad:0.6], changes the delivery from that point on. Every other voice skips the tags.";
 
 /** Single source of truth for the version the server reports: package.json. */
 const PACKAGE_VERSION = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
@@ -156,7 +164,8 @@ export const VOICE_GUIDANCE =
   "Every voice is designed around one language (Thai, English, or Mandarin Chinese) and reads the others " +
   "with an accent. English text usually sounds best with an English voice (donut, cookie, toast, latte, " +
   "espresso, mocha) and Mandarin with taohuay or oolong; some users prefer Thai-accented English, so " +
-  "follow the user's preference when they have one.";
+  "follow the user's preference when they have one. khanomchan and kaprao are experimental and read " +
+  "emotion tags (see list_voices).";
 
 function voiceHint(config: Config): string {
   return `Voice id from list_voices (default "${config.defaultVoice}", a Thai voice). ${VOICE_GUIDANCE}`;
@@ -203,15 +212,16 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         "Synthesize a short line with Paxa TTS and play it through this machine's speakers. " +
         "Blocks until playback finishes. Waits for the currently playing audio but jumps ahead " +
         "of queued long-form segments. For long content use queue_speech. " +
-        `Costs ${TTS_CREDITS_PER_1K} credits per 1000 characters.`,
+        `Costs ${TTS_CREDITS_PER_1K} credits per 1000 characters. ${EMOTION_TAG_HINT}`,
       inputSchema: {
-        text: z.string().min(1).max(2000).describe("Text to speak, Thai or English, up to 2000 characters"),
+        text: z.string().min(1).max(2000).describe("Text to speak, Thai, English, or Mandarin Chinese, up to 2000 characters"),
         voice: z.string().optional().describe(voiceHint(config)),
+        language: z.enum(["auto", "th", "en", "zh"]).optional().describe(TTS_LANGUAGE_HINT),
       },
     },
-    async ({ text: input, voice }) => {
+    async ({ text: input, voice, language }) => {
       try {
-        const [segment] = engine.enqueueTts([input], voice ?? config.defaultVoice, true);
+        const [segment] = engine.enqueueTts([input], voice ?? config.defaultVoice, true, { language });
         const settled = await engine.waitFor(segment as NonNullable<typeof segment>);
         switch (settled.status) {
           case "done":
@@ -242,17 +252,18 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         "Read long content aloud (stories, articles, books). Splits the text into segments, " +
         "synthesizes ahead while playing, and returns immediately; segments play in order " +
         "after anything already queued. Monitor and control with the control_playback tool. " +
-        `Costs ${TTS_CREDITS_PER_1K} credits per 1000 characters.`,
+        `Costs ${TTS_CREDITS_PER_1K} credits per 1000 characters. ${EMOTION_TAG_HINT}`,
       inputSchema: {
-        text: z.string().min(1).max(200_000).describe("Text to read aloud, Thai or English"),
+        text: z.string().min(1).max(200_000).describe("Text to read aloud, Thai, English, or Mandarin Chinese"),
         voice: z.string().optional().describe(voiceHint(config)),
+        language: z.enum(["auto", "th", "en", "zh"]).optional().describe(TTS_LANGUAGE_HINT),
       },
     },
-    async ({ text: input, voice }) => {
+    async ({ text: input, voice, language }) => {
       try {
         const chunks = chunkText(input);
         if (chunks.length === 0) return failure("The text contains nothing to read.");
-        const segments = engine.enqueueTts(chunks, voice ?? config.defaultVoice, false);
+        const segments = engine.enqueueTts(chunks, voice ?? config.defaultVoice, false, { language });
         const chars = chunks.reduce((sum, c) => sum + c.length, 0);
         const credits = (chars * TTS_CREDITS_PER_1K) / 1000;
         return text(
@@ -355,10 +366,11 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
       annotations: { title: "Text to speech (file only)", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       description:
         "Synthesize speech with Paxa TTS and save it as an audio file without playing it. " +
-        `Costs ${TTS_CREDITS_PER_1K} credits per 1000 characters.`,
+        `Costs ${TTS_CREDITS_PER_1K} credits per 1000 characters. ${EMOTION_TAG_HINT}`,
       inputSchema: {
-        text: z.string().min(1).max(TTS_MAX_CHARS).describe(`Text to synthesize, up to ${TTS_MAX_CHARS} characters`),
+        text: z.string().min(1).max(TTS_MAX_CHARS).describe(`Text to synthesize, Thai, English, or Mandarin Chinese, up to ${TTS_MAX_CHARS} characters`),
         voice: z.string().optional().describe(voiceHint(config)),
+        language: z.enum(["auto", "th", "en", "zh"]).optional().describe(TTS_LANGUAGE_HINT),
         format: z.enum(["mp3", "opus", "wav"]).optional().describe('Audio format (default "mp3")'),
         output_path: z
           .string()
@@ -366,11 +378,11 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
           .describe("Where to save the file. Relative paths resolve against PAXA_OUTPUT_DIR (or the working directory)."),
       },
     },
-    async ({ text: input, voice, format, output_path }) => {
+    async ({ text: input, voice, language, format, output_path }) => {
       try {
         const chosenVoice = voice ?? config.defaultVoice;
         const chosenFormat: AudioFormat = format ?? "mp3";
-        const audio = await client.tts({ text: input, voice: chosenVoice, format: chosenFormat });
+        const audio = await client.tts({ text: input, voice: chosenVoice, format: chosenFormat, language: language as TtsLanguage | undefined });
         const target = output_path
           ? isAbsolute(output_path)
             ? output_path
@@ -441,6 +453,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
           return `${head}${t.text}${source}${review}`;
         });
         lines.push(`\nUsed ${response.usage.credits} credits (${response.usage.billable_chars} billable characters).`);
+        if (response.requestId) lines.push(`Request id: ${response.requestId}`);
         return text(lines.join("\n"));
       } catch (err) {
         return failure(err);
@@ -482,7 +495,9 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
 
         const document = (await readFile(path)).toString("base64");
         const response = await client.ocr({ document, output: output ?? "markdown" });
-        const usage = `Read ${response.usage.pages} page(s) for ${response.usage.credits} credits.`;
+        const usage =
+          `Read ${response.usage.pages} page(s) for ${response.usage.credits} credits.` +
+          (response.requestId ? ` Request id: ${response.requestId}.` : "");
 
         if ((output ?? "markdown") === "structured") {
           return text(`${usage}\n\n${JSON.stringify(response.pages, null, 2)}`);
@@ -568,7 +583,8 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
 
         const parts = [
           `Status: ${response.status}. Read ${response.usage.pages} page(s) against ${response.usage.leaves} leaf ` +
-            `field(s) for ${response.usage.credits} credits.`,
+            `field(s) for ${response.usage.credits} credits.` +
+            (response.requestId ? ` Request id: ${response.requestId}.` : ""),
         ];
         if (output_path) {
           const given = isAbsolute(output_path) ? output_path : join(config.outputDir, output_path);
@@ -741,7 +757,8 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         }
 
         const parts = [
-          `Transcribed ${formatDuration(response.usage.seconds)} of audio for ${response.usage.credits} credits.`,
+          `Transcribed ${formatDuration(response.usage.seconds)} of audio for ${response.usage.credits} credits.` +
+            (response.requestId ? ` Request id: ${response.requestId}.` : ""),
         ];
         if (pinned.terms.length > 0) {
           let line = `Pinned ${pinned.terms.length} term(s)`;
@@ -764,6 +781,62 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
   );
 
   server.registerTool(
+    "send_feedback",
+    {
+      title: "Send feedback to Paxa",
+      annotations: { title: "Send feedback to Paxa", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      description:
+        "Report a wrong or poor output, an API problem, or a platform issue to the Paxa Labs team, tied to the " +
+        "request ids the other tools print (\"Request id: ...\"). A rating alone on at least one request id is a " +
+        "complete report. For a wrong output, add an example with the exact input, the output received, and the " +
+        "output expected. Free, no credits. Use it when the user says an output was wrong, or asks to report a " +
+        "problem; do not file reports the user did not ask for.",
+      inputSchema: {
+        kind: z
+          .enum(["model", "api", "platform", "other"])
+          .describe('"model" for a wrong or poor output, "api" when the API misbehaved, "platform" for dashboard, billing, or docs, else "other"'),
+        rating: z.enum(["good", "bad"]).optional().describe("Judgment of the output the request ids name"),
+        message: z.string().max(10_000).optional().describe("What happened and what was expected, plain text or Markdown"),
+        request_ids: z
+          .array(z.string())
+          .max(20)
+          .optional()
+          .describe("Up to 20 request ids from earlier tool results, or a live session's connection id"),
+        example: z
+          .object({
+            input: z.string().max(10_000).optional(),
+            output: z.string().max(10_000).optional(),
+            expected: z.string().max(10_000).optional(),
+          })
+          .optional()
+          .describe("A worked case: the exact input, the output received, and the output expected"),
+      },
+    },
+    async ({ kind, rating, message, request_ids, example }) => {
+      try {
+        if (!rating && !message && !example) {
+          return failure("A report needs a rating (with at least one request id), a message, or an example.");
+        }
+        if (rating && !message && !example && (!request_ids || request_ids.length === 0)) {
+          return failure("A rating alone needs at least one request id to rate.");
+        }
+        const request: FeedbackRequest = { kind };
+        if (rating) request.rating = rating;
+        if (message) request.message = message;
+        if (request_ids && request_ids.length > 0) request.request_ids = request_ids;
+        if (example) request.example = example;
+        const response = await client.feedback(request);
+        return text(
+          `Feedback sent (report ${response.id}, ${response.kind}${response.rating ? `, rated ${response.rating}` : ""}, ` +
+            `status ${response.status}). The team's note, when there is one, shows at https://paxalabs.com/app.`,
+        );
+      } catch (err) {
+        return failure(err);
+      }
+    },
+  );
+
+  server.registerTool(
     "list_voices",
     {
       title: "List voices",
@@ -776,11 +849,19 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         const voices = await client.voices();
         const lines = voices.map((v) => {
           const traits = [v.name, v.gender, v.language, v.accent].filter(Boolean).join(", ");
-          return `- ${v.id} (${traits}): ${v.description ?? "no description"}`;
+          const tags =
+            v.emotion_tags && v.emotion_tags.length > 0
+              ? ` [experimental, reads emotion tags: ${v.emotion_tags.map((t) => `[${t}]`).join(" ")}]`
+              : v.experimental
+                ? " [experimental]"
+                : "";
+          return `- ${v.id} (${traits}): ${v.description ?? "no description"}${tags}`;
         });
         return text(
           `${voices.length} voices. Default voice: ${config.defaultVoice}. ` +
-            `Thai leads: khanomkrok (male) and nomyen (female). ${VOICE_GUIDANCE}\n${lines.join("\n")}`,
+            `Thai leads: khanomkrok (male) and nomyen (female). ${VOICE_GUIDANCE} ` +
+            "An emotion tag is written into the text, optionally weighted 0 to 1 as in [sad:0.5], and holds " +
+            `until the next tag; tag characters bill as text.\n${lines.join("\n")}`,
         );
       } catch (err) {
         return failure(err);

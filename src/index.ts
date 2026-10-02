@@ -14,6 +14,7 @@ async function main(): Promise<void> {
 
   const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
   const { PaxaClient } = await import("./api.js");
+  type TtsLanguage = import("./api.js").TtsLanguage;
   const { SpeechEngine } = await import("./queue.js");
   const { createServer } = await import("./server.js");
 
@@ -22,8 +23,9 @@ async function main(): Promise<void> {
 
   const client = new PaxaClient(config.baseUrl, config.apiKey);
   const engine = new SpeechEngine({
-    buffered: (text, voice, format) => client.tts({ text, voice, format }),
-    stream: (text, voice, signal) => client.ttsStream({ text, voice, format: "mp3" }, signal),
+    buffered: (text, voice, format, language) => client.tts({ text, voice, format, language: language as TtsLanguage | undefined }),
+    stream: (text, voice, signal, language) =>
+      client.ttsStream({ text, voice, format: "mp3", language: language as TtsLanguage | undefined }, signal),
   });
   const server = createServer(config, client, engine);
 

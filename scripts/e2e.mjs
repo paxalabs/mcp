@@ -41,8 +41,9 @@ await call("list_voices", {});
 
 // File-only synthesis
 const tts = await call("text_to_speech", {
-  text: "Paxa Labs text to speech, saved to a file without playback.",
+  text: "Paxa Labs text to speech, saved to a file without playback. Code AB2039.",
   voice: "khanomkrok",
+  language: "en",
 });
 const savedPath = tts.body.match(/to (\/\S+)/)?.[1];
 
@@ -55,6 +56,10 @@ if (savedPath) {
   );
   if (!/speech/i.test(stt.body)) console.log("WARNING: transcript does not contain the word 'speech'");
   if (!/1 from config/.test(stt.body)) console.log("WARNING: the configured vocabulary was not pinned");
+  // Rate that transcription good through the feedback endpoint (free)
+  const rid = stt.body.match(/Request id: (\S+?)\.?(\s|$)/)?.[1];
+  if (rid) await call("send_feedback", { kind: "model", rating: "good", request_ids: [rid], message: "e2e: automated rating from the MCP server's end-to-end test" });
+  else console.log("WARNING: no request id in the transcription result");
 }
 
 // speak: blocking, plays out loud

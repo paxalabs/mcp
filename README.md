@@ -64,14 +64,15 @@ into `~/.cursor/mcp.json` or VS Code's MCP settings. Then replace
 
 | Tool | What it does | Credits |
 | --- | --- | --- |
-| `speak` | Synthesize a short line and play it through the speakers, blocking until done | 15 per 1000 chars |
-| `queue_speech` | Read long content aloud: auto-chunks, synthesizes ahead while playing, returns immediately | 15 per 1000 chars |
+| `speak` | Synthesize a short line and play it through the speakers, blocking until done | 10 per 1000 chars |
+| `queue_speech` | Read long content aloud: auto-chunks, synthesizes ahead while playing, returns immediately | 10 per 1000 chars |
 | `control_playback` | Control the shared audio queue: `status`, `pause`, `resume`, `skip`, `clear` | free |
 | `play_audio` | Play a local audio file through the speakers | free |
-| `text_to_speech` | Synthesize speech to an audio file (mp3, opus, wav) without playing it | 15 per 1000 chars |
+| `text_to_speech` | Synthesize speech to an audio file (mp3, opus, wav) without playing it | 10 per 1000 chars |
 | `translate_to_thai` | Translate any language into Thai, with formality, glossary, and context controls | 25 per 1000 chars |
 | `ocr_document` | OCR a local PDF, PNG, JPEG, or WebP into Markdown or structured blocks | 6.5 per page |
 | `extract_fields` | Fill a schema of typed fields (Thai IDs, dates, amounts, banks, line items) from a local PDF or image; every value is printed in the document or null with the reason | 13 per page (19.5 for schemas over 50 fields) |
+| `send_feedback` | Rate an output or report a problem to the Paxa team, tied to the request ids the tools print | free |
 | `transcribe_audio` | Transcribe a local recording (Thai, English, mixed) to text, with optional speaker labels, word timings, and srt or vtt subtitles saved next to it | 8.33 per minute |
 | `list_voices` | The TTS voice roster with character notes | free |
 | `list_models` | Available models, limits, and pricing | free |

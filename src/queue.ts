@@ -30,6 +30,8 @@ export interface Segment {
   kind: "tts" | "file";
   text?: string;
   voice?: string;
+  /** TTS language setting for how codes and digits are read; undefined means the API's auto. */
+  language?: string;
   file?: string;
   label: string;
   priority: boolean;
@@ -47,9 +49,9 @@ interface InternalSegment extends Segment {
 /** How the engine gets audio. Both calls synthesize the given text with the given voice. */
 export interface Synthesizer {
   /** Full download, used to synthesize ahead while something else plays. */
-  buffered(text: string, voice: string, format: "mp3" | "wav"): Promise<Buffer>;
+  buffered(text: string, voice: string, format: "mp3" | "wav", language?: string): Promise<Buffer>;
   /** Chunked mp3 that starts arriving while synthesis runs. Optional; without it everything is buffered. */
-  stream?(text: string, voice: string, signal: AbortSignal): Promise<ReadableStream<Uint8Array>>;
+  stream?(text: string, voice: string, signal: AbortSignal, language?: string): Promise<ReadableStream<Uint8Array>>;
 }
 
 const TERMINAL: ReadonlySet<SegmentStatus> = new Set(["done", "failed", "skipped", "cleared"]);
@@ -102,13 +104,14 @@ export class SpeechEngine {
 
   constructor(private readonly synth: Synthesizer) {}
 
-  enqueueTts(texts: string[], voice: string, priority: boolean): Segment[] {
+  enqueueTts(texts: string[], voice: string, priority: boolean, options: { language?: string } = {}): Segment[] {
     const segments = texts.map((text): InternalSegment => {
       return {
         id: this.nextId++,
         kind: "tts",
         text,
         voice,
+        language: options.language,
         label: label(text),
         priority,
         status: "pending",
@@ -317,7 +320,7 @@ export class SpeechEngine {
 
     let body: ReadableStream<Uint8Array>;
     try {
-      body = await stream(segment.text as string, segment.voice as string, controller.signal);
+      body = await stream(segment.text as string, segment.voice as string, controller.signal, segment.language);
     } catch (err) {
       handle.stop();
       this.handle = null;
@@ -383,7 +386,7 @@ export class SpeechEngine {
       if (segment.status === "pending") segment.status = "synthesizing";
       const format = playbackFormat();
       segment.synthPromise = (async () => {
-        const audio = await this.synth.buffered(segment.text as string, segment.voice as string, format);
+        const audio = await this.synth.buffered(segment.text as string, segment.voice as string, format, segment.language);
         const file = join(this.ensureTmpDir(), `segment-${segment.id}.${format}`);
         await writeFile(file, audio);
         segment.file = file;
