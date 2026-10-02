@@ -15,9 +15,9 @@ your agent, including local audio playback.
 
 An agent connected to this server can speak out loud through your machine's
 speakers, read long content aloud as a managed playback queue, save speech to
-audio files, transcribe recordings with subtitles, translate any language
-into Thai, read PDFs and images with OCR, and extract typed fields from
-documents.
+audio files, listen for a spoken reply, transcribe recordings with
+subtitles, translate any language into Thai, read PDFs and images with OCR,
+and extract typed fields from documents.
 
 > **Beta.** The tool set is complete and tested end to end, but tool names and
 > behavior may still change before 1.0 as feedback comes in. Report problems at
@@ -72,6 +72,7 @@ into `~/.cursor/mcp.json` or VS Code's MCP settings. Then replace
 | `translate_to_thai` | Translate any language into Thai, with formality, glossary, and context controls | 25 per 1000 chars |
 | `ocr_document` | OCR a local PDF, PNG, JPEG, or WebP into Markdown or structured blocks | 6.5 per page |
 | `extract_fields` | Fill a schema of typed fields (Thai IDs, dates, amounts, banks, line items) from a local PDF or image; every value is printed in the document or null with the reason | 13 per page (19.5 for schemas over 50 fields) |
+| `listen` | Record one spoken turn from the microphone and return its transcript; the API detects when the user stops talking | 12.5 per minute listened |
 | `send_feedback` | Rate an output or report a problem to the Paxa team, tied to the request ids the tools print | free |
 | `transcribe_audio` | Transcribe a local recording (Thai, English, mixed) to text, with optional speaker labels, word timings, and srt or vtt subtitles saved next to it | 8.33 per minute |
 | `list_voices` | The TTS voice roster with character notes | free |
@@ -191,6 +192,25 @@ If your editor or desktop app was not launched from a terminal, its PATH
 may not include your node bin directory, and the hook will fail silently.
 Use the absolute path to `paxa` in the hook command if that happens.
 
+## Listening
+
+`listen` turns the microphone into an answer. Ask a question with `speak`,
+call `listen`, and the user's spoken reply comes back as text as soon as
+they stop talking: Paxa's realtime transcription detects the end of the
+turn, so nothing has to guess at silence. The audio goes straight to the
+API and is never written to disk. A few seconds of listening costs well
+under one credit (12.5 credits per minute, silence included).
+
+It needs a command-line recorder, which stock macOS and Windows do not
+ship: `brew install ffmpeg` or `brew install sox` on macOS; sox on Windows
+(or ffmpeg with `PAXA_MIC` set to the DirectShow device name); ffmpeg,
+sox, `parecord`, or `arecord` on Linux. It also needs Node 22 or newer,
+and the app that launched the server (Terminal, VS Code, Claude Desktop)
+must have microphone permission. `PAXA_MIC` picks a device when the
+system default is not the one you want. To check recognition without a
+microphone, `node scripts/listen-file.mjs recording.mp3` feeds a file
+through the same session.
+
 ## Environment variables
 
 | Variable | Required | Default | Purpose |
@@ -199,6 +219,7 @@ Use the absolute path to `paxa` in the hook command if that happens.
 | `PAXA_OUTPUT_DIR` | no | working directory | Where `text_to_speech` saves files |
 | `PAXA_DEFAULT_VOICE` | no | `nomyen` | Voice used when a tool call does not pick one. Every voice is designed around one language. English text usually sounds best with an English voice (`donut`, `cookie`, `toast`, `latte`, `espresso`, `mocha`), Mandarin with `taohuay` or `oolong` |
 | `PAXA_VOCABULARY` | no | | Keyword pinning for `transcribe_audio`: comma-separated names and terms the transcript should spell as written (product names, people, jargon) |
+| `PAXA_MIC` | no | system default | Microphone device for `listen`: an AVFoundation device name on macOS, a PulseAudio or ALSA device on Linux, a DirectShow device name on Windows |
 | `PAXA_VOCABULARY_FILE` | no | | A text file with one term per line (`#` starts a comment), also pinned on every transcription. Read at call time, so edits apply without a restart |
 | `PAXA_BASE_URL` | no | `https://api.paxalabs.com` | API origin override |
 

@@ -23,7 +23,9 @@ import {
 } from "./api.js";
 import { chunkText } from "./chunk.js";
 import { MISSING_KEY_MESSAGE, parseVocabulary, type Config } from "./config.js";
+import { listenOnce, realtimeSupported } from "./listen.js";
 import { SpeechEngine } from "./queue.js";
+import { findRecorder, noRecorderMessage } from "./recorder.js";
 
 const TTS_CREDITS_PER_1K = 10;
 const TTS_LANGUAGE_HINT =
@@ -41,6 +43,7 @@ const AUDIO_EXTENSIONS = new Set([".mp3", ".wav", ".opus", ".ogg", ".flac", ".m4
 const OCR_EXTENSIONS = new Set([".pdf", ".png", ".jpg", ".jpeg", ".webp"]);
 const STT_EXTENSIONS = new Set([".mp3", ".wav", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".webm"]);
 const STT_CREDITS_PER_MINUTE = 8.33;
+const LISTEN_CREDITS_PER_MINUTE = 12.5;
 /** Inline transcripts longer than this are cut, with a pointer to the saved file. An hour of speech is well under it. */
 const INLINE_TRANSCRIPT_LIMIT = 200_000;
 
@@ -197,7 +200,8 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         "play_audio replays a local audio file; translate_to_thai translates any language into " +
         "Thai; ocr_document runs OCR on a local PDF or image; extract_fields fills a schema of typed " +
         "fields from a local document; transcribe_audio turns a local recording into text and " +
-        "subtitles. Paid tools spend account credits " +
+        "subtitles; listen records one spoken turn from the microphone and returns its transcript. " +
+        "Paid tools spend account credits " +
         "(check with get_account)." +
         keyWarning,
     },
@@ -774,6 +778,103 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         }
         if (timestamps && response.words) parts.push("Word timings:\n" + JSON.stringify(response.words));
         return text(parts.join("\n\n"));
+      } catch (err) {
+        return failure(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "listen",
+    {
+      title: "Listen to the microphone",
+      annotations: { title: "Listen to the microphone", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      description:
+        "Record one spoken turn from this machine's microphone and return its transcript (Thai, English, or " +
+        "other languages, code-switching included). Paxa's realtime transcription detects when the user starts " +
+        "and stops talking, so the call returns as soon as the turn ends; the audio goes straight to the API " +
+        "and nothing is written to disk. Waits for any speech this server is playing to finish first. Use it " +
+        "after speak when you asked the user a question and want their spoken answer. Returns an empty " +
+        "transcript when nobody spoke within wait_seconds. Costs " +
+        `${LISTEN_CREDITS_PER_MINUTE} credits per minute of audio sent, silence included (a few seconds of ` +
+        "listening costs well under one credit). Needs a microphone recorder on this machine (ffmpeg or sox; " +
+        "parecord or arecord on Linux) and Node 22 or newer; the host app must have microphone permission.",
+      inputSchema: {
+        language: z
+          .string()
+          .max(16)
+          .optional()
+          .describe('Language hint as a BCP 47 tag such as "th" or "en". Omit to auto-detect.'),
+        style: z
+          .enum(["verbatim", "clean"])
+          .optional()
+          .describe('"verbatim" (default) keeps fillers and false starts; "clean" drops them'),
+        convention: z
+          .enum(["spoken", "written"])
+          .optional()
+          .describe('"spoken" (default) writes numbers as said; "written" uses numerals'),
+        vocabulary: z
+          .array(z.string().max(50))
+          .max(50)
+          .optional()
+          .describe("Keyword pinning, as in transcribe_audio. Added to any configured PAXA_VOCABULARY terms."),
+        max_seconds: z
+          .number()
+          .int()
+          .min(5)
+          .max(300)
+          .optional()
+          .describe("Stop and return whatever was heard after this many seconds (default 30)"),
+        wait_seconds: z
+          .number()
+          .int()
+          .min(3)
+          .max(120)
+          .optional()
+          .describe("Give up when nobody has started speaking after this many seconds (default 15)"),
+      },
+    },
+    async ({ language, style, convention, vocabulary, max_seconds, wait_seconds }) => {
+      try {
+        if (!config.apiKey) return failure(MISSING_KEY_MESSAGE);
+        if (!realtimeSupported()) {
+          return failure("Listening needs Node 22 or newer (its built-in WebSocket). This server runs on an older Node.");
+        }
+        if (!findRecorder()) return failure(noRecorderMessage());
+        const pinned = await pinnedVocabulary(config, vocabulary);
+
+        // Do not listen while this machine is still talking: wait for the queue to drain, up to a minute.
+        const waitUntil = Date.now() + 60_000;
+        while (engine.status().state !== "idle" && Date.now() < waitUntil) {
+          await new Promise((r) => setTimeout(r, 100));
+        }
+
+        const result = await listenOnce({
+          baseUrl: config.baseUrl,
+          apiKey: config.apiKey,
+          language,
+          style,
+          convention,
+          vocabulary: pinned.terms,
+          maxSeconds: max_seconds ?? 30,
+          waitSeconds: wait_seconds ?? 15,
+          device: config.micDevice,
+          isSpeaking: () => engine.status().state !== "idle",
+        });
+
+        const parts: string[] = [];
+        if (result.text) {
+          const speech = result.speechSeconds !== null ? `${result.speechSeconds.toFixed(1)} s of speech` : "one turn";
+          const how = result.endedBy === "max_seconds" ? ", cut at max_seconds" : "";
+          parts.push(`Heard (${speech}${how}, ${result.credits.toFixed(2)} credits): ${result.text}`);
+        } else if (result.endedBy === "no_speech") {
+          parts.push(`Nobody spoke within the wait time (${result.audioSeconds.toFixed(1)} s listened, ${result.credits.toFixed(2)} credits).`);
+        } else {
+          parts.push(`The turn held no speech the model could read (${result.credits.toFixed(2)} credits).`);
+        }
+        if (pinned.terms.length > 0) parts.push(`Pinned ${pinned.terms.length} term(s).`);
+        if (result.connection) parts.push(`Connection id: ${result.connection} (use it with send_feedback).`);
+        return text(parts.join("\n"));
       } catch (err) {
         return failure(err);
       }

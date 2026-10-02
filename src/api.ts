@@ -6,6 +6,7 @@ export const TTS_MODEL = "paxa-tts-flash-v1";
 export const TRANSLATE_MODEL = "paxa-translation-lite-v1";
 export const OCR_MODEL = "paxa-ocr-lite-v1";
 export const STT_MODEL = "paxa-stt-lite-v1-preview";
+export const STT_REALTIME_MODEL = "paxa-stt-lite-realtime-v1-preview";
 export const EXTRACT_MODEL = "paxa-doc-extract-v1";
 
 export const TTS_MAX_CHARS = 5000;

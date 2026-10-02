@@ -8,6 +8,8 @@ export interface Config {
   vocabulary: string[];
   /** A file with one term per line, also pinned on every transcription. Read at call time, so edits apply without a restart. */
   vocabularyFile: string | undefined;
+  /** PAXA_MIC: the microphone device for the listen tool; undefined means the system default. */
+  micDevice: string | undefined;
 }
 
 /** Split a vocabulary list on the given separator, dropping blanks and, for files, lines that start with "#". */
@@ -30,5 +32,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const defaultVoice = env.PAXA_DEFAULT_VOICE?.trim() || "nomyen";
   const vocabulary = parseVocabulary(env.PAXA_VOCABULARY ?? "", ",");
   const vocabularyFile = env.PAXA_VOCABULARY_FILE?.trim() || undefined;
-  return { apiKey, baseUrl, outputDir, defaultVoice, vocabulary, vocabularyFile };
+  const micDevice = env.PAXA_MIC?.trim() || undefined;
+  return { apiKey, baseUrl, outputDir, defaultVoice, vocabulary, vocabularyFile, micDevice };
 }
