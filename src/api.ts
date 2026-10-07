@@ -400,6 +400,18 @@ export class PaxaClient {
    * after the first byte shows up as a body that ends early, not as an error
    * response, and the API refunds it automatically.
    */
+  /** Synthesize with word timings. Bills 1.25 times the untimed request; the audio bytes are the same. */
+  async ttsTimed(req: TtsRequest): Promise<{ audio: Buffer; spans: Array<{ text: string; start: number; end: number }> }> {
+    const res = await this.request("/v1/tts", {
+      method: "POST",
+      body: { model: TTS_MODEL, format: "mp3", ...req, stream: false, timestamps: "word" },
+      idempotent: true,
+      timeoutMs: 300_000,
+    });
+    const body = (await res.json()) as { audio: string; timing?: { spans?: Array<{ text: string; start: number; end: number }> } };
+    return { audio: Buffer.from(body.audio, "base64"), spans: body.timing?.spans ?? [] };
+  }
+
   async ttsStream(req: TtsRequest, signal?: AbortSignal): Promise<ReadableStream<Uint8Array>> {
     const res = await this.request("/v1/tts", {
       method: "POST",

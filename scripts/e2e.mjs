@@ -44,7 +44,10 @@ const tts = await call("text_to_speech", {
   text: "Paxa Labs text to speech, saved to a file without playback. Code AB2039.",
   voice: "khanomkrok",
   language: "en",
+  subtitles: "srt",
+  speed: 1.1,
 });
+if (!/Captions: .*\.srt \(\d+ cues/.test(tts.body)) console.log("WARNING: no caption file reported");
 const savedPath = tts.body.match(/to (\/\S+)/)?.[1];
 
 // Round trip: transcribe the file just synthesized, with every output format (about 0.5 credits)
@@ -56,6 +59,16 @@ if (savedPath) {
   );
   if (!/speech/i.test(stt.body)) console.log("WARNING: transcript does not contain the word 'speech'");
   if (!/1 from config/.test(stt.body)) console.log("WARNING: the configured vocabulary was not pinned");
+  // Transcribe the same clip wrapped in a video container, with a pause list (needs ffmpeg; about 0.5 credits)
+  const { spawnSync } = await import("node:child_process");
+  if (spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status === 0) {
+    const video = savedPath.replace(/\.mp3$/, ".mp4");
+    const made = spawnSync("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=160x120:r=5", "-i", savedPath, "-shortest", "-c:v", "libx264", "-c:a", "aac", video]);
+    if (made.status === 0) {
+      const v = await call("transcribe_audio", { file_path: video, pauses_over: 0.5 }, 300_000);
+      if (!/Pauses of 0\.5 s or more: \d+/.test(v.body)) console.log("WARNING: no pause list in the video transcription");
+    } else console.log("WARNING: could not build the test video");
+  } else console.log("(ffmpeg not installed: video transcription step skipped)");
   // Rate that transcription good through the feedback endpoint (free)
   const rid = stt.body.match(/Request id: (\S+?)\.?(\s|$)/)?.[1];
   if (rid) await call("send_feedback", { kind: "model", rating: "good", request_ids: [rid], message: "e2e: automated rating from the MCP server's end-to-end test" });

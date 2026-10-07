@@ -68,13 +68,13 @@ into `~/.cursor/mcp.json` or VS Code's MCP settings. Then replace
 | `queue_speech` | Read long content aloud: auto-chunks, synthesizes ahead while playing, returns immediately | 10 per 1000 chars |
 | `control_playback` | Control the shared audio queue: `status`, `pause`, `resume`, `skip`, `clear` | free |
 | `play_audio` | Play a local audio file through the speakers | free |
-| `text_to_speech` | Synthesize speech to an audio file (mp3, opus, wav) without playing it | 10 per 1000 chars |
+| `text_to_speech` | Synthesize speech to an audio file (mp3, opus, wav) without playing it: long scripts are split and joined into one file, and `subtitles` writes a matching srt or vtt | 10 per 1000 chars (12.5 with subtitles) |
 | `translate_to_thai` | Translate any language into Thai, with formality, glossary, and context controls | 25 per 1000 chars |
 | `ocr_document` | OCR a local PDF, PNG, JPEG, or WebP into Markdown or structured blocks | 6.5 per page |
 | `extract_fields` | Fill a schema of typed fields (Thai IDs, dates, amounts, banks, line items) from a local PDF or image; every value is printed in the document or null with the reason | 13 per page (19.5 for schemas over 50 fields) |
 | `listen` | Record one spoken turn from the microphone and return its transcript; the API detects when the user stops talking | 12.5 per minute listened |
 | `send_feedback` | Rate an output or report a problem to the Paxa team, tied to the request ids the tools print | free |
-| `transcribe_audio` | Transcribe a local recording (Thai, English, mixed) to text, with optional speaker labels, word timings, and srt or vtt subtitles saved next to it | 8.33 per minute |
+| `transcribe_audio` | Transcribe a local recording or video (Thai, English, mixed) to text, with optional speaker labels, word timings, srt or vtt subtitles, and a list of pauses to cut | 8.33 per minute |
 | `list_voices` | The TTS voice roster with character notes | free |
 | `list_models` | Available models, limits, and pricing | free |
 | `get_account` | Credit balance, plan, and rate limits | free |
@@ -191,6 +191,27 @@ paxa say --voice cookie "Deploy is live"
 If your editor or desktop app was not launched from a terminal, its PATH
 may not include your node bin directory, and the hook will fail silently.
 Use the absolute path to `paxa` in the hook command if that happens.
+
+## Content creation
+
+Three things creators asked for, each the local half of an API call:
+
+- **Transcribe a video.** Give `transcribe_audio` an mp4, mov, mkv, or
+  most other containers; ffmpeg pulls the sound track out locally and the
+  API transcribes it. Add `pauses_over: 0.7` and the result lists every
+  silence longer than that with its start and end, the dead air to cut.
+  Ask for `save: ["srt"]` and the captions come back too.
+- **Voiceover with captions that match.** `text_to_speech` with
+  `subtitles: "srt"` (or `"vtt"`) writes a caption file next to the audio,
+  timed from the synthesized words. Cues break at sentence punctuation, at
+  pauses, and at the line budget, never inside a word, and Thai lines end
+  where the writer put a space. Timed synthesis bills 1.25x.
+- **Long narration to one file.** Scripts past 5,000 characters are split
+  at paragraphs and sentences, synthesized part by part, and joined with
+  ffmpeg into a single mp3, opus, or wav, captions offset to match.
+
+ffmpeg is the one requirement for video input and for joining parts
+(`brew install ffmpeg` on macOS). Everything else works without it.
 
 ## Listening
 

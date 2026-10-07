@@ -1,4 +1,5 @@
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 
@@ -24,7 +25,9 @@ import {
 } from "./api.js";
 import { chunkText } from "./chunk.js";
 import { MISSING_KEY_MESSAGE, parseVocabulary, type Config } from "./config.js";
+import { buildCues, findPauses, markSpacing, toSrt, toVtt, type WordSpan } from "./captions.js";
 import { listenOnce, realtimeSupported } from "./listen.js";
+import { FFMPEG_INSTALL_HINT, concatAudio, extractAudio, hasFfmpeg, hasFfprobe, probeDuration } from "./media.js";
 import { SpeechEngine } from "./queue.js";
 import { findRecorder, noRecorderMessage } from "./recorder.js";
 
@@ -44,14 +47,18 @@ const PACKAGE_VERSION = (createRequire(import.meta.url)("../package.json") as { 
 const ICON_URL = "https://raw.githubusercontent.com/paxalabs/mcp/main/assets/icon.png";
 /** A short note to the agent about the newest tools, shown with the server instructions at connect time. */
 const WHATS_NEW =
-  `New in ${PACKAGE_VERSION}: a speed setting on the speech tools (1.2 to 1.3 reads long content faster at the ` +
-  "same price), and the listen tool, which records one spoken turn and returns its transcript when the user stops " +
-  "talking. Try listen after asking the user a question out loud. send_feedback reports a wrong output to Paxa " +
-  "against the request id a result prints.";
+  `New in ${PACKAGE_VERSION}, for content work: transcribe_audio takes video files and can list the pauses to cut; ` +
+  "text_to_speech takes long scripts (parts joined into one file), a speed setting, and writes matching srt or vtt " +
+  "captions. The listen tool records one spoken turn and returns it when the user stops talking; try it after asking " +
+  "a question out loud. send_feedback reports a wrong output against the request id a result prints.\n";
 
 const AUDIO_EXTENSIONS = new Set([".mp3", ".wav", ".opus", ".ogg", ".flac", ".m4a", ".aac", ".aiff", ".caf"]);
 const OCR_EXTENSIONS = new Set([".pdf", ".png", ".jpg", ".jpeg", ".webp"]);
 const STT_EXTENSIONS = new Set([".mp3", ".wav", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".webm"]);
+/** Video containers whose sound track ffmpeg pulls out locally before transcription. */
+const VIDEO_EXTENSIONS = new Set([".mp4", ".m4v", ".mov", ".mkv", ".avi", ".mpg", ".mpeg", ".ts", ".3gp", ".wmv", ".flv"]);
+/** Above this, text_to_speech splits the text and joins the parts with ffmpeg. */
+const TTS_LONG_TEXT_MAX = 200_000;
 const STT_CREDITS_PER_MINUTE = 8.33;
 const LISTEN_CREDITS_PER_MINUTE = 12.5;
 /** Inline transcripts longer than this are cut, with a pointer to the saved file. An hour of speech is well under it. */
@@ -391,10 +398,17 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
       title: "Text to speech (file only)",
       annotations: { title: "Text to speech (file only)", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       description:
-        "Synthesize speech with Paxa TTS and save it as an audio file without playing it. " +
-        `Costs ${TTS_CREDITS_PER_1K} credits per 1000 characters. ${EMOTION_TAG_HINT}`,
+        "Synthesize speech with Paxa TTS and save it as an audio file without playing it: voiceovers, " +
+        `narration, audiobooks. Text beyond ${TTS_MAX_CHARS} characters is split at paragraphs and sentences and ` +
+        "the parts are joined into one file (needs ffmpeg). With subtitles set, an srt or vtt caption file that " +
+        `matches the voice word for word is written next to the audio. Costs ${TTS_CREDITS_PER_1K} credits per ` +
+        `1000 characters, ${TTS_CREDITS_PER_1K * 1.25} with subtitles. ${EMOTION_TAG_HINT}`,
       inputSchema: {
-        text: z.string().min(1).max(TTS_MAX_CHARS).describe(`Text to synthesize, Thai, English, or Mandarin Chinese, up to ${TTS_MAX_CHARS} characters`),
+        text: z
+          .string()
+          .min(1)
+          .max(TTS_LONG_TEXT_MAX)
+          .describe(`Text to synthesize, Thai, English, or Mandarin Chinese, up to ${TTS_LONG_TEXT_MAX} characters`),
         voice: z.string().optional().describe(voiceHint(config)),
         language: z.enum(["auto", "th", "en", "zh"]).optional().describe(TTS_LANGUAGE_HINT),
         speed: z.number().min(0.5).max(1.5).optional().describe(SPEED_HINT),
@@ -403,27 +417,95 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
           .string()
           .optional()
           .describe("Where to save the file. Relative paths resolve against PAXA_OUTPUT_DIR (or the working directory)."),
+        subtitles: z
+          .enum(["srt", "vtt"])
+          .optional()
+          .describe(
+            "Also write a caption file (same name as the audio, .srt or .vtt) timed from the synthesized words: " +
+              "cues break at sentence punctuation, at pauses, and at the line budget, never inside a word, Thai included. Bills 1.25x.",
+          ),
+        subtitle_line_chars: z
+          .number()
+          .int()
+          .min(10)
+          .max(120)
+          .optional()
+          .describe("Characters per caption line, 10 to 120 (default 60). Thai marks above and below consonants are not counted."),
       },
     },
-    async ({ text: input, voice, language, speed, format, output_path }) => {
+    async ({ text: input, voice, language, speed, format, output_path, subtitles, subtitle_line_chars }) => {
+      let workDir: string | null = null;
       try {
         const chosenVoice = voice ?? config.defaultVoice;
         const chosenFormat: AudioFormat = format ?? "mp3";
-        const audio = await client.tts({ text: input, voice: chosenVoice, format: chosenFormat, ...speechOptions(config, language, speed) });
+        const options = speechOptions(config, language, speed);
+        const chunks = input.length <= TTS_MAX_CHARS ? [input] : chunkText(input);
+        if (chunks.length === 0) return failure("The text contains nothing to synthesize.");
+        if (chunks.length > 1 && !(hasFfmpeg() && hasFfprobe())) {
+          return failure(
+            `The text is ${input.length} characters, over the ${TTS_MAX_CHARS} the API takes in one request, and joining ` +
+              `the parts needs ffmpeg, which is not installed. ${FFMPEG_INSTALL_HINT} Or send up to ${TTS_MAX_CHARS} characters per call.`,
+          );
+        }
+
         const target = output_path
           ? isAbsolute(output_path)
             ? output_path
             : join(config.outputDir, output_path)
           : join(config.outputDir, timestampName(chosenVoice, chosenFormat));
         await mkdir(dirname(target), { recursive: true });
-        await writeFile(target, audio);
-        const credits = estimateTtsCredits(input.length);
-        return text(
+
+        const spans: WordSpan[] = [];
+        let audio: Buffer;
+        if (chunks.length === 1) {
+          const only = chunks[0] as string;
+          if (subtitles) {
+            const timed = await client.ttsTimed({ text: only, voice: chosenVoice, format: chosenFormat, ...options });
+            audio = timed.audio;
+            spans.push(...timed.spans);
+          } else {
+            audio = await client.tts({ text: only, voice: chosenVoice, format: chosenFormat, ...options });
+          }
+          await writeFile(target, audio);
+        } else {
+          // Synthesize the parts one at a time (one request in flight keeps low-concurrency plans safe), then join.
+          workDir = await mkdtemp(join(tmpdir(), "paxa-tts-"));
+          const parts: string[] = [];
+          let offset = 0;
+          for (let i = 0; i < chunks.length; i++) {
+            const part = join(workDir, `part-${String(i + 1).padStart(3, "0")}.${chosenFormat}`);
+            if (subtitles) {
+              const timed = await client.ttsTimed({ text: chunks[i] as string, voice: chosenVoice, format: chosenFormat, ...options });
+              await writeFile(part, timed.audio);
+              for (const span of timed.spans) spans.push({ text: span.text, start: span.start + offset, end: span.end + offset });
+            } else {
+              await writeFile(part, await client.tts({ text: chunks[i] as string, voice: chosenVoice, format: chosenFormat, ...options }));
+            }
+            if (subtitles) offset += probeDuration(part);
+            parts.push(part);
+          }
+          await concatAudio(parts, target, chosenFormat, join(workDir, "parts.txt"));
+          audio = await readFile(target);
+        }
+
+        const credits = estimateTtsCredits(input.length) * (subtitles ? 1.25 : 1);
+        const lines = [
           `Saved ${(audio.length / 1024).toFixed(1)} KiB of ${chosenFormat} audio to ${target} ` +
-            `(voice "${chosenVoice}", ${input.length} characters, about ${credits.toFixed(1)} credits).`,
-        );
+            `(voice "${chosenVoice}", ${input.length} characters` +
+            (chunks.length > 1 ? `, ${chunks.length} parts joined` : "") +
+            `, about ${credits.toFixed(1)} credits).`,
+        ];
+        if (subtitles) {
+          const cues = buildCues(markSpacing(spans, input), subtitle_line_chars != null ? { lineChars: subtitle_line_chars } : {});
+          const captionPath = join(dirname(target), basename(target, extname(target)) + `.${subtitles}`);
+          await writeFile(captionPath, subtitles === "srt" ? toSrt(cues) : toVtt(cues), "utf8");
+          lines.push(`Captions: ${captionPath} (${cues.length} cues, ${spans.length} words timed).`);
+        }
+        return text(lines.join("\n"));
       } catch (err) {
         return failure(err);
+      } finally {
+        if (workDir) await rm(workDir, { recursive: true, force: true }).catch(() => {});
       }
     },
   );
@@ -658,7 +740,8 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
       title: "Transcribe a recording",
       annotations: { title: "Transcribe a recording", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
       description:
-        "Transcribe a local recording of speech, Thai or any other language, code-switching included (mp3, wav, flac, ogg, m4a, aac, or webm; " +
+        "Transcribe a local recording or video of speech, Thai or any other language, code-switching included (mp3, wav, flac, ogg, m4a, aac, " +
+        "webm; or mp4, mov, mkv, avi and other video files, whose sound track is extracted locally with ffmpeg; " +
         "up to 60 minutes and 25 MiB) with Paxa STT. The transcript comes back inline, so nothing needs " +
         "to be read from disk afterwards; optionally it is also saved as txt, json (with word timings " +
         "and segments), srt, or vtt, named after the recording. Existing files are never overwritten. " +
@@ -667,7 +750,16 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         `${STT_CREDITS_PER_MINUTE} credits per minute of audio (0.1 minimum); subtitles and word timings ` +
         "cost nothing extra. Long recordings take minutes to process.",
       inputSchema: {
-        file_path: z.string().describe("Path to a local mp3, wav, flac, ogg, m4a, aac, or webm recording"),
+        file_path: z.string().describe("Path to a local recording (mp3, wav, flac, ogg, m4a, aac, webm) or video (mp4, mov, mkv, avi, and more)"),
+        pauses_over: z
+          .number()
+          .min(0.2)
+          .max(30)
+          .optional()
+          .describe(
+            "List every silence between words at least this many seconds long, with its start and end: the dead air to cut " +
+              "when editing. 0.7 suits speech; 1.5 finds only the long gaps. Free (uses the word timings).",
+          ),
         language: z
           .string()
           .max(16)
@@ -718,19 +810,31 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
           .describe("Where to write the files. Defaults to the recording's own folder. A relative path resolves against PAXA_OUTPUT_DIR (or the working directory)."),
       },
     },
-    async ({ file_path, language, diarization, style, convention, vocabulary, timestamps, subtitle_line_chars, save, output_dir }) => {
+    async ({ file_path, language, diarization, style, convention, vocabulary, timestamps, pauses_over, subtitle_line_chars, save, output_dir }) => {
+      let workDir: string | null = null;
       try {
         const path = resolve(file_path);
         const info = await stat(path).catch(() => null);
         if (!info?.isFile()) return failure(`No file found at ${path}`);
-        if (info.size > STT_MAX_BYTES) {
-          return failure(
-            `${path} is ${(info.size / 1024 / 1024).toFixed(1)} MiB; the transcription limit is 25 MiB per file.`,
-          );
-        }
         const ext = extname(path).toLowerCase();
-        if (ext && !STT_EXTENSIONS.has(ext)) {
-          return failure(`${path} is not a supported recording type (mp3, wav, flac, ogg, m4a, aac, webm).`);
+        const isVideo = VIDEO_EXTENSIONS.has(ext);
+        if (ext && !isVideo && !STT_EXTENSIONS.has(ext)) {
+          return failure(`${path} is not a supported recording or video type (mp3, wav, flac, ogg, m4a, aac, webm; mp4, mov, mkv, avi, mpg, 3gp, wmv, flv).`);
+        }
+
+        // A video's sound track is pulled out locally, so the size limit applies to the audio, not the video.
+        let audioPath = path;
+        if (isVideo) {
+          if (!hasFfmpeg()) return failure(`Transcribing a video needs ffmpeg to extract its sound track. ${FFMPEG_INSTALL_HINT}`);
+          workDir = await mkdtemp(join(tmpdir(), "paxa-stt-"));
+          audioPath = join(workDir, "track.ogg");
+          await extractAudio(path, audioPath);
+        }
+        const audioInfo = await stat(audioPath);
+        if (audioInfo.size > STT_MAX_BYTES) {
+          return failure(
+            `${isVideo ? "The sound track of " : ""}${path} is ${(audioInfo.size / 1024 / 1024).toFixed(1)} MiB; the transcription limit is 25 MiB per file.`,
+          );
         }
 
         const pinned = await pinnedVocabulary(config, vocabulary);
@@ -738,13 +842,13 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         const formats = new Set(save ?? []);
         const wantSrt = formats.has("srt");
         const wantVtt = formats.has("vtt");
-        const request: SttRequest = { audio: (await readFile(path)).toString("base64") };
+        const request: SttRequest = { audio: (await readFile(audioPath)).toString("base64") };
         if (language) request.language = language;
         if (diarization) request.diarization = true;
         if (style) request.style = style;
         if (convention) request.convention = convention;
         if (pinned.terms.length > 0) request.vocabulary = pinned.terms;
-        if (timestamps || formats.has("json")) request.timestamps = "word";
+        if (timestamps || pauses_over != null || formats.has("json")) request.timestamps = "word";
         // One rendered file covers both subtitle formats: VTT is derived from SRT when both are wanted.
         if (wantSrt || wantVtt) request.subtitles = wantSrt ? "srt" : "vtt";
         if (subtitle_line_chars != null) request.subtitle_line_chars = subtitle_line_chars;
@@ -799,10 +903,23 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         } else {
           parts.push(transcript || "(no speech detected)");
         }
+        if (pauses_over != null) {
+          const pauses = findPauses(response.words ?? [], pauses_over);
+          const shown = pauses.slice(0, 300);
+          parts.push(
+            `Pauses of ${pauses_over} s or more: ${pauses.length}` +
+              (pauses.length > 0
+                ? "\n" + shown.map((p) => `- ${p.start.toFixed(2)} to ${p.end.toFixed(2)} (${p.seconds.toFixed(2)} s)`).join("\n")
+                : "") +
+              (pauses.length > shown.length ? `\n[${pauses.length - shown.length} more in the json file's word timings]` : ""),
+          );
+        }
         if (timestamps && response.words) parts.push("Word timings:\n" + JSON.stringify(response.words));
         return text(parts.join("\n\n"));
       } catch (err) {
         return failure(err);
+      } finally {
+        if (workDir) await rm(workDir, { recursive: true, force: true }).catch(() => {});
       }
     },
   );
