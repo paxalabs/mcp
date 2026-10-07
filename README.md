@@ -219,6 +219,7 @@ through the same session.
 | `PAXA_OUTPUT_DIR` | no | working directory | Where `text_to_speech` saves files |
 | `PAXA_DEFAULT_VOICE` | no | `nomyen` | Voice used when a tool call does not pick one. Every voice is designed around one language. English text usually sounds best with an English voice (`donut`, `cookie`, `toast`, `latte`, `espresso`, `mocha`), Mandarin with `taohuay` or `oolong` |
 | `PAXA_VOCABULARY` | no | | Keyword pinning for `transcribe_audio`: comma-separated names and terms the transcript should spell as written (product names, people, jargon) |
+| `PAXA_DEFAULT_SPEED` | no | `1` | Speaking rate used when a call does not pick one, 0.5 to 1.5. Pitch is preserved and the price is the same; 1.2 to 1.3 suits long reads |
 | `PAXA_MIC` | no | system default | Microphone device for `listen`: an AVFoundation device name on macOS, a PulseAudio or ALSA device on Linux, a DirectShow device name on Windows |
 | `PAXA_VOCABULARY_FILE` | no | | A text file with one term per line (`#` starts a comment), also pinned on every transcription. Read at call time, so edits apply without a restart |
 | `PAXA_BASE_URL` | no | `https://api.paxalabs.com` | API origin override |

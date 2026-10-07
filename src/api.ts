@@ -124,6 +124,14 @@ export interface TtsRequest {
   model?: string;
   /** How codes, digits, and symbols are read. "auto" (the default) works it out from the text. */
   language?: TtsLanguage;
+  /** Speaking rate, 0.5 to 1.5, as a multiplier on the voice's design speed. Pitch is preserved; the price is the same. */
+  speed?: number;
+}
+
+/** Per-request synthesis settings shared by the speech tools and the engine. */
+export interface SpeechOptions {
+  language?: TtsLanguage;
+  speed?: number;
 }
 
 export interface Voice {

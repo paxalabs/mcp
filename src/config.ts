@@ -4,6 +4,8 @@ export interface Config {
   baseUrl: string;
   outputDir: string;
   defaultVoice: string;
+  /** PAXA_DEFAULT_SPEED: speaking rate used when a call does not pick one; undefined means the API's 1. */
+  defaultSpeed: number | undefined;
   /** Terms pinned on every transcription, from PAXA_VOCABULARY (comma-separated). */
   vocabulary: string[];
   /** A file with one term per line, also pinned on every transcription. Read at call time, so edits apply without a restart. */
@@ -30,8 +32,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const baseUrl = (env.PAXA_BASE_URL?.trim() || "https://api.paxalabs.com").replace(/\/+$/, "");
   const outputDir = env.PAXA_OUTPUT_DIR?.trim() || process.cwd();
   const defaultVoice = env.PAXA_DEFAULT_VOICE?.trim() || "nomyen";
+  const speedRaw = Number(env.PAXA_DEFAULT_SPEED?.trim() || "");
+  const defaultSpeed = Number.isFinite(speedRaw) && speedRaw > 0 ? Math.min(1.5, Math.max(0.5, speedRaw)) : undefined;
   const vocabulary = parseVocabulary(env.PAXA_VOCABULARY ?? "", ",");
   const vocabularyFile = env.PAXA_VOCABULARY_FILE?.trim() || undefined;
   const micDevice = env.PAXA_MIC?.trim() || undefined;
-  return { apiKey, baseUrl, outputDir, defaultVoice, vocabulary, vocabularyFile, micDevice };
+  return { apiKey, baseUrl, outputDir, defaultVoice, defaultSpeed, vocabulary, vocabularyFile, micDevice };
 }

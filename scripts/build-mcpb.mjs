@@ -86,6 +86,8 @@ const manifest = {
         PAXA_API_KEY: "${user_config.api_key}",
         PAXA_OUTPUT_DIR: "${user_config.output_dir}",
         PAXA_DEFAULT_VOICE: "${user_config.default_voice}",
+        PAXA_DEFAULT_SPEED: "${user_config.default_speed}",
+        PAXA_MIC: "${user_config.mic}",
         PAXA_VOCABULARY: "${user_config.vocabulary}",
         PAXA_VOCABULARY_FILE: "${user_config.vocabulary_file}",
       },
@@ -121,6 +123,18 @@ const manifest = {
       description: "Voice id used when a request does not pick one. Ask for list_voices to see the roster.",
       required: false,
       default: "nomyen",
+    },
+    default_speed: {
+      type: "string",
+      title: "Default speaking rate",
+      description: "0.5 to 1.5, as a multiplier on each voice's design speed. Leave empty for 1. 1.2 to 1.3 suits long reads.",
+      required: false,
+    },
+    mic: {
+      type: "string",
+      title: "Microphone device",
+      description: "Device name for the listen tool. Leave empty for the system default.",
+      required: false,
     },
     vocabulary: {
       type: "string",

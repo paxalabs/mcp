@@ -18,6 +18,7 @@ import {
   TTS_MAX_CHARS,
   type AudioFormat,
   type FeedbackRequest,
+  type SpeechOptions,
   type TtsLanguage,
   type TranslateRequest,
 } from "./api.js";
@@ -31,6 +32,9 @@ const TTS_CREDITS_PER_1K = 10;
 const TTS_LANGUAGE_HINT =
   'How codes, digits, and symbols are read: "th", "en", or "zh". Words keep the language of their script. ' +
   'Default "auto" works it out from the text; set it when a code such as AB2039 should be spelled in a particular language.';
+const SPEED_HINT =
+  "Speaking rate from 0.5 to 1.5 as a multiplier on the voice's design speed (1 is as designed; 1.2 to 1.3 " +
+  "suits long reads). Pitch is preserved and the price is the same. Defaults to PAXA_DEFAULT_SPEED when set.";
 const EMOTION_TAG_HINT =
   "On the experimental voices khanomchan and kaprao, a bracketed emotion tag written into the text, such as " +
   "[happy] or [sad:0.6], changes the delivery from that point on. Every other voice skips the tags.";
@@ -38,6 +42,12 @@ const EMOTION_TAG_HINT =
 /** Single source of truth for the version the server reports: package.json. */
 const PACKAGE_VERSION = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
 const ICON_URL = "https://raw.githubusercontent.com/paxalabs/mcp/main/assets/icon.png";
+/** A short note to the agent about the newest tools, shown with the server instructions at connect time. */
+const WHATS_NEW =
+  `New in ${PACKAGE_VERSION}: a speed setting on the speech tools (1.2 to 1.3 reads long content faster at the ` +
+  "same price), and the listen tool, which records one spoken turn and returns its transcript when the user stops " +
+  "talking. Try listen after asking the user a question out loud. send_feedback reports a wrong output to Paxa " +
+  "against the request id a result prints.";
 
 const AUDIO_EXTENSIONS = new Set([".mp3", ".wav", ".opus", ".ogg", ".flac", ".m4a", ".aac", ".aiff", ".caf"]);
 const OCR_EXTENSIONS = new Set([".pdf", ".png", ".jpg", ".jpeg", ".webp"]);
@@ -170,6 +180,15 @@ export const VOICE_GUIDANCE =
   "follow the user's preference when they have one. khanomchan and kaprao are experimental and read " +
   "emotion tags (see list_voices).";
 
+/** The synthesis settings for one call: the call's values first, then the configured defaults. */
+function speechOptions(config: Config, language: TtsLanguage | undefined, speed: number | undefined): SpeechOptions {
+  const out: SpeechOptions = {};
+  if (language) out.language = language;
+  const rate = speed ?? config.defaultSpeed;
+  if (rate !== undefined) out.speed = rate;
+  return out;
+}
+
 function voiceHint(config: Config): string {
   return `Voice id from list_voices (default "${config.defaultVoice}", a Thai voice). ${VOICE_GUIDANCE}`;
 }
@@ -202,7 +221,8 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         "fields from a local document; transcribe_audio turns a local recording into text and " +
         "subtitles; listen records one spoken turn from the microphone and returns its transcript. " +
         "Paid tools spend account credits " +
-        "(check with get_account)." +
+        "(check with get_account). " +
+        WHATS_NEW +
         keyWarning,
     },
   );
@@ -221,11 +241,12 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         text: z.string().min(1).max(2000).describe("Text to speak, Thai, English, or Mandarin Chinese, up to 2000 characters"),
         voice: z.string().optional().describe(voiceHint(config)),
         language: z.enum(["auto", "th", "en", "zh"]).optional().describe(TTS_LANGUAGE_HINT),
+        speed: z.number().min(0.5).max(1.5).optional().describe(SPEED_HINT),
       },
     },
-    async ({ text: input, voice, language }) => {
+    async ({ text: input, voice, language, speed }) => {
       try {
-        const [segment] = engine.enqueueTts([input], voice ?? config.defaultVoice, true, { language });
+        const [segment] = engine.enqueueTts([input], voice ?? config.defaultVoice, true, speechOptions(config, language, speed));
         const settled = await engine.waitFor(segment as NonNullable<typeof segment>);
         switch (settled.status) {
           case "done":
@@ -261,13 +282,14 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         text: z.string().min(1).max(200_000).describe("Text to read aloud, Thai, English, or Mandarin Chinese"),
         voice: z.string().optional().describe(voiceHint(config)),
         language: z.enum(["auto", "th", "en", "zh"]).optional().describe(TTS_LANGUAGE_HINT),
+        speed: z.number().min(0.5).max(1.5).optional().describe(SPEED_HINT),
       },
     },
-    async ({ text: input, voice, language }) => {
+    async ({ text: input, voice, language, speed }) => {
       try {
         const chunks = chunkText(input);
         if (chunks.length === 0) return failure("The text contains nothing to read.");
-        const segments = engine.enqueueTts(chunks, voice ?? config.defaultVoice, false, { language });
+        const segments = engine.enqueueTts(chunks, voice ?? config.defaultVoice, false, speechOptions(config, language, speed));
         const chars = chunks.reduce((sum, c) => sum + c.length, 0);
         const credits = (chars * TTS_CREDITS_PER_1K) / 1000;
         return text(
@@ -375,6 +397,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         text: z.string().min(1).max(TTS_MAX_CHARS).describe(`Text to synthesize, Thai, English, or Mandarin Chinese, up to ${TTS_MAX_CHARS} characters`),
         voice: z.string().optional().describe(voiceHint(config)),
         language: z.enum(["auto", "th", "en", "zh"]).optional().describe(TTS_LANGUAGE_HINT),
+        speed: z.number().min(0.5).max(1.5).optional().describe(SPEED_HINT),
         format: z.enum(["mp3", "opus", "wav"]).optional().describe('Audio format (default "mp3")'),
         output_path: z
           .string()
@@ -382,11 +405,11 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
           .describe("Where to save the file. Relative paths resolve against PAXA_OUTPUT_DIR (or the working directory)."),
       },
     },
-    async ({ text: input, voice, language, format, output_path }) => {
+    async ({ text: input, voice, language, speed, format, output_path }) => {
       try {
         const chosenVoice = voice ?? config.defaultVoice;
         const chosenFormat: AudioFormat = format ?? "mp3";
-        const audio = await client.tts({ text: input, voice: chosenVoice, format: chosenFormat, language: language as TtsLanguage | undefined });
+        const audio = await client.tts({ text: input, voice: chosenVoice, format: chosenFormat, ...speechOptions(config, language, speed) });
         const target = output_path
           ? isAbsolute(output_path)
             ? output_path

@@ -200,8 +200,8 @@ export async function runSay(args: string[]): Promise<void> {
 
   const client = new PaxaClient(config.baseUrl, apiKey as string);
   const engine = new SpeechEngine({
-    buffered: (t, v, format) => client.tts({ text: t, voice: v, format }),
-    stream: (t, v, signal) => client.ttsStream({ text: t, voice: v, format: "mp3" }, signal),
+    buffered: (t, v, format, options) => client.tts({ text: t, voice: v, format, ...options }),
+    stream: (t, v, signal, options) => client.ttsStream({ text: t, voice: v, format: "mp3", ...options }, signal),
   });
   const [segment] = engine.enqueueTts([text], chosenVoice, true);
   const settled = await engine.waitFor(segment as NonNullable<typeof segment>);
