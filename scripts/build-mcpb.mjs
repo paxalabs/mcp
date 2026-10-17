@@ -86,6 +86,7 @@ const manifest = {
         PAXA_API_KEY: "${user_config.api_key}",
         PAXA_OUTPUT_DIR: "${user_config.output_dir}",
         PAXA_DEFAULT_VOICE: "${user_config.default_voice}",
+        PAXA_TTS_MODEL: "${user_config.tts_model}",
         PAXA_DEFAULT_SPEED: "${user_config.default_speed}",
         PAXA_MIC: "${user_config.mic}",
         PAXA_VOCABULARY: "${user_config.vocabulary}",
@@ -123,6 +124,15 @@ const manifest = {
       description: "Voice id used when a request does not pick one. Ask for list_voices to see the roster.",
       required: false,
       default: "nomyen",
+    },
+    tts_model: {
+      type: "string",
+      title: "Speech model",
+      description:
+        "paxa-tts-flash-v2 (default): 50 voices, each speaks Thai, English, and Mandarin, all read direction tags. " +
+        "paxa-tts-flash-v1 only for regional Thai accents or a voice v2 does not carry.",
+      required: false,
+      default: "paxa-tts-flash-v2",
     },
     default_speed: {
       type: "string",

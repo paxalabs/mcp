@@ -48,6 +48,10 @@ const tts = await call("text_to_speech", {
   speed: 1.1,
 });
 if (!/Captions: .*\.srt \(\d+ cues/.test(tts.body)) console.log("WARNING: no caption file reported");
+if (!/model paxa-tts-flash-v2/.test(tts.body)) console.log("WARNING: default model is not v2");
+// The legacy model on request, with a voice only it carries (about 0.2 credits)
+const v1 = await call("text_to_speech", { text: "Legacy model check.", voice: "donut", model: "paxa-tts-flash-v1" });
+if (!/model paxa-tts-flash-v1/.test(v1.body)) console.log("WARNING: explicit v1 model not honored");
 const savedPath = tts.body.match(/to (\/\S+)/)?.[1];
 
 // Round trip: transcribe the file just synthesized, with every output format (about 0.5 credits)

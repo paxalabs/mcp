@@ -192,6 +192,24 @@ If your editor or desktop app was not launched from a terminal, its PATH
 may not include your node bin directory, and the hook will fail silently.
 Use the absolute path to `paxa` in the hook command if that happens.
 
+## Speech models
+
+Speech runs on Paxa TTS Flash v2 by default: 50 voices that each speak
+Thai, English, and Mandarin Chinese, and every voice reads direction tags
+written into the text, such as `[whispering]`, `[laughs]`,
+`[speaking slowly, close to the microphone]`, a weighted blend like
+`[happy:0.7+sad:0.3]`, or `<emph>` and `<whisper>` marks. Nothing in
+brackets is spoken, tag characters bill as text, and a tag the model
+cannot do is refused before any charge. The
+[directions guide](https://paxalabs.com/docs/directions) lists every
+sound and rule.
+
+Pass `model: "paxa-tts-flash-v1"` on a call, or set `PAXA_TTS_MODEL`, only
+for v1's legacy features: four Thai voices with regional accents (Isan,
+Northern, Southern), the fixed emotion tags on `khanomchan` and `kaprao`,
+or one of the eight voices v2 does not carry (donut, toast, padthai, yoyo,
+somtam, larb, khaosoi, roti). Same price and limits on both.
+
 ## Content creation
 
 Three things creators asked for, each the local half of an API call:
@@ -238,7 +256,8 @@ through the same session.
 | --- | --- | --- | --- |
 | `PAXA_API_KEY` | yes | | Your API key. The server starts without it, but every tool that calls the API then fails with setup instructions the agent can relay |
 | `PAXA_OUTPUT_DIR` | no | working directory | Where `text_to_speech` saves files |
-| `PAXA_DEFAULT_VOICE` | no | `nomyen` | Voice used when a tool call does not pick one. Every voice is designed around one language. English text usually sounds best with an English voice (`donut`, `cookie`, `toast`, `latte`, `espresso`, `mocha`), Mandarin with `taohuay` or `oolong` |
+| `PAXA_TTS_MODEL` | no | `paxa-tts-flash-v2` | Speech model for every call that does not pick one. v2 has 50 voices that each speak Thai, English, and Mandarin, and all read direction tags. `paxa-tts-flash-v1` only for regional Thai accents, the fixed emotion tags on `khanomchan` and `kaprao`, or one of the eight voices v2 does not carry |
+| `PAXA_DEFAULT_VOICE` | no | `nomyen` | Voice used when a tool call does not pick one. On v2 every voice speaks all three languages, so pick by character from `list_voices` |
 | `PAXA_VOCABULARY` | no | | Keyword pinning for `transcribe_audio`: comma-separated names and terms the transcript should spell as written (product names, people, jargon) |
 | `PAXA_DEFAULT_SPEED` | no | `1` | Speaking rate used when a call does not pick one, 0.5 to 1.5. Pitch is preserved and the price is the same; 1.2 to 1.3 suits long reads |
 | `PAXA_MIC` | no | system default | Microphone device for `listen`: an AVFoundation device name on macOS, a PulseAudio or ALSA device on Linux, a DirectShow device name on Windows |

@@ -24,7 +24,7 @@ import {
   type TranslateRequest,
 } from "./api.js";
 import { chunkText } from "./chunk.js";
-import { MISSING_KEY_MESSAGE, parseVocabulary, type Config } from "./config.js";
+import { MISSING_KEY_MESSAGE, TTS_MODELS, parseVocabulary, type Config, type TtsModel } from "./config.js";
 import { buildCues, findPauses, markSpacing, toSrt, toVtt, type WordSpan } from "./captions.js";
 import { listenOnce, realtimeSupported } from "./listen.js";
 import { FFMPEG_INSTALL_HINT, concatAudio, extractAudio, hasFfmpeg, hasFfprobe, probeDuration } from "./media.js";
@@ -39,18 +39,24 @@ const SPEED_HINT =
   "Speaking rate from 0.5 to 1.5 as a multiplier on the voice's design speed (1 is as designed; 1.2 to 1.3 " +
   "suits long reads). Pitch is preserved and the price is the same. Defaults to PAXA_DEFAULT_SPEED when set.";
 const EMOTION_TAG_HINT =
-  "On the experimental voices khanomchan and kaprao, a bracketed emotion tag written into the text, such as " +
-  "[happy] or [sad:0.6], changes the delivery from that point on. Every other voice skips the tags.";
+  "Direction tags (paxa-tts-flash-v2, every voice): words in square brackets written into the text set the delivery " +
+  "from that point on, in English, Thai, or Chinese, e.g. [whispering], [speaking slowly, close to the microphone], " +
+  "[sad:0.5], or a blend [happy:0.7+sad:0.3]; [neutral] returns to the voice's own delivery. Sounds such as [laughs], " +
+  "[sighs], [gasps] play where written; [um] and [hmm] are spoken; <emph>...</emph> and <whisper>...</whisper> mark a " +
+  "span. Nothing in brackets is spoken, tag characters bill as text, and a tag the model cannot do is refused before " +
+  "any charge. On paxa-tts-flash-v1 only khanomchan and kaprao read tags, from a fixed emotion list.";
 
 /** Single source of truth for the version the server reports: package.json. */
 const PACKAGE_VERSION = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
 const ICON_URL = "https://raw.githubusercontent.com/paxalabs/mcp/main/assets/icon.png";
 /** A short note to the agent about the newest tools, shown with the server instructions at connect time. */
 const WHATS_NEW =
-  `New in ${PACKAGE_VERSION}, for content work: transcribe_audio takes video files and can list the pauses to cut; ` +
-  "text_to_speech takes long scripts (parts joined into one file), a speed setting, and writes matching srt or vtt " +
-  "captions. The listen tool records one spoken turn and returns it when the user stops talking; try it after asking " +
-  "a question out loud. send_feedback reports a wrong output against the request id a result prints.\n";
+  `New in ${PACKAGE_VERSION}: speech runs on Paxa TTS Flash v2 by default. Its 50 voices each speak Thai, English, ` +
+  "and Mandarin, and every voice reads direction tags written into the text, such as [whispering], [laughs], " +
+  "[speaking slowly] or <emph>, so try them when the delivery matters. Pass model paxa-tts-flash-v1 only for " +
+  "regional Thai accents or a voice v2 does not carry. Also: transcribe_audio takes video files and lists pauses to " +
+  "cut, text_to_speech takes long scripts and writes matching srt or vtt captions, speed sets the rate, listen records " +
+  "one spoken turn, and send_feedback reports a wrong output against a result's request id.\n";
 
 const AUDIO_EXTENSIONS = new Set([".mp3", ".wav", ".opus", ".ogg", ".flac", ".m4a", ".aac", ".aiff", ".caf"]);
 const OCR_EXTENSIONS = new Set([".pdf", ".png", ".jpg", ".jpeg", ".webp"]);
@@ -181,15 +187,25 @@ function estimateTtsCredits(chars: number): number {
 
 /** Shared guidance on choosing a voice; a hint, since some users prefer Thai-accented English. */
 export const VOICE_GUIDANCE =
-  "Every voice is designed around one language (Thai, English, or Mandarin Chinese) and reads the others " +
-  "with an accent. English text usually sounds best with an English voice (donut, cookie, toast, latte, " +
-  "espresso, mocha) and Mandarin with taohuay or oolong; some users prefer Thai-accented English, so " +
-  "follow the user's preference when they have one. khanomchan and kaprao are experimental and read " +
-  "emotion tags (see list_voices).";
+  "On paxa-tts-flash-v2 (the default) every voice speaks Thai, English, and Mandarin Chinese, so choose by " +
+  "character and purpose from list_voices rather than by language. On paxa-tts-flash-v1 each voice is built " +
+  "around one language and reads the others with an accent (English voices there: donut, cookie, toast, " +
+  "latte, espresso, mocha), four Thai voices carry a regional accent, and khanomchan and kaprao read the " +
+  "fixed emotion tag set. Follow the user's preference when they have one.";
+const MODEL_HINT =
+  '"paxa-tts-flash-v2" (default) has 50 voices that each speak Thai, English, and Mandarin, and every one reads ' +
+  "direction tags written into the text. Pick \"paxa-tts-flash-v1\" only for its legacy features: regional Thai " +
+  "accents (Isan, Northern, Southern), the fixed emotion tags on khanomchan and kaprao, or one of the eight voices " +
+  "v2 does not carry (donut, toast, padthai, yoyo, somtam, larb, khaosoi, roti). Same price and limits.";
 
 /** The synthesis settings for one call: the call's values first, then the configured defaults. */
-function speechOptions(config: Config, language: TtsLanguage | undefined, speed: number | undefined): SpeechOptions {
-  const out: SpeechOptions = {};
+function speechOptions(
+  config: Config,
+  language: TtsLanguage | undefined,
+  speed: number | undefined,
+  model: TtsModel | undefined,
+): SpeechOptions {
+  const out: SpeechOptions = { model: model ?? config.ttsModel };
   if (language) out.language = language;
   const rate = speed ?? config.defaultSpeed;
   if (rate !== undefined) out.speed = rate;
@@ -249,11 +265,12 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         voice: z.string().optional().describe(voiceHint(config)),
         language: z.enum(["auto", "th", "en", "zh"]).optional().describe(TTS_LANGUAGE_HINT),
         speed: z.number().min(0.5).max(1.5).optional().describe(SPEED_HINT),
+        model: z.enum(TTS_MODELS).optional().describe(MODEL_HINT),
       },
     },
-    async ({ text: input, voice, language, speed }) => {
+    async ({ text: input, voice, language, speed, model }) => {
       try {
-        const [segment] = engine.enqueueTts([input], voice ?? config.defaultVoice, true, speechOptions(config, language, speed));
+        const [segment] = engine.enqueueTts([input], voice ?? config.defaultVoice, true, speechOptions(config, language, speed, model));
         const settled = await engine.waitFor(segment as NonNullable<typeof segment>);
         switch (settled.status) {
           case "done":
@@ -290,13 +307,14 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         voice: z.string().optional().describe(voiceHint(config)),
         language: z.enum(["auto", "th", "en", "zh"]).optional().describe(TTS_LANGUAGE_HINT),
         speed: z.number().min(0.5).max(1.5).optional().describe(SPEED_HINT),
+        model: z.enum(TTS_MODELS).optional().describe(MODEL_HINT),
       },
     },
-    async ({ text: input, voice, language, speed }) => {
+    async ({ text: input, voice, language, speed, model }) => {
       try {
         const chunks = chunkText(input);
         if (chunks.length === 0) return failure("The text contains nothing to read.");
-        const segments = engine.enqueueTts(chunks, voice ?? config.defaultVoice, false, speechOptions(config, language, speed));
+        const segments = engine.enqueueTts(chunks, voice ?? config.defaultVoice, false, speechOptions(config, language, speed, model));
         const chars = chunks.reduce((sum, c) => sum + c.length, 0);
         const credits = (chars * TTS_CREDITS_PER_1K) / 1000;
         return text(
@@ -412,6 +430,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         voice: z.string().optional().describe(voiceHint(config)),
         language: z.enum(["auto", "th", "en", "zh"]).optional().describe(TTS_LANGUAGE_HINT),
         speed: z.number().min(0.5).max(1.5).optional().describe(SPEED_HINT),
+        model: z.enum(TTS_MODELS).optional().describe(MODEL_HINT),
         format: z.enum(["mp3", "opus", "wav"]).optional().describe('Audio format (default "mp3")'),
         output_path: z
           .string()
@@ -433,12 +452,12 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
           .describe("Characters per caption line, 10 to 120 (default 60). Thai marks above and below consonants are not counted."),
       },
     },
-    async ({ text: input, voice, language, speed, format, output_path, subtitles, subtitle_line_chars }) => {
+    async ({ text: input, voice, language, speed, model, format, output_path, subtitles, subtitle_line_chars }) => {
       let workDir: string | null = null;
       try {
         const chosenVoice = voice ?? config.defaultVoice;
         const chosenFormat: AudioFormat = format ?? "mp3";
-        const options = speechOptions(config, language, speed);
+        const options = speechOptions(config, language, speed, model);
         const chunks = input.length <= TTS_MAX_CHARS ? [input] : chunkText(input);
         if (chunks.length === 0) return failure("The text contains nothing to synthesize.");
         if (chunks.length > 1 && !(hasFfmpeg() && hasFfprobe())) {
@@ -491,7 +510,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         const credits = estimateTtsCredits(input.length) * (subtitles ? 1.25 : 1);
         const lines = [
           `Saved ${(audio.length / 1024).toFixed(1)} KiB of ${chosenFormat} audio to ${target} ` +
-            `(voice "${chosenVoice}", ${input.length} characters` +
+            `(voice "${chosenVoice}", model ${options.model}, ${input.length} characters` +
             (chunks.length > 1 ? `, ${chunks.length} parts joined` : "") +
             `, about ${credits.toFixed(1)} credits).`,
         ];
@@ -1088,21 +1107,36 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
     async () => {
       try {
         const voices = await client.voices();
-        const lines = voices.map((v) => {
-          const traits = [v.name, v.gender, v.language, v.accent].filter(Boolean).join(", ");
-          const tags =
-            v.emotion_tags && v.emotion_tags.length > 0
-              ? ` [experimental, reads emotion tags: ${v.emotion_tags.map((t) => `[${t}]`).join(" ")}]`
-              : v.experimental
-                ? " [experimental]"
-                : "";
-          return `- ${v.id} (${traits}): ${v.description ?? "no description"}${tags}`;
+        // The API lists a voice once per model that serves it; group them so the agent sees two rosters, not duplicates.
+        const byModel = new Map<string, typeof voices>();
+        for (const v of voices) byModel.set(v.model, [...(byModel.get(v.model) ?? []), v]);
+        const ordered = [...byModel.keys()].sort((a, b) => (a === config.ttsModel ? -1 : b === config.ttsModel ? 1 : a.localeCompare(b)));
+        const ids = (model: string) => new Set((byModel.get(model) ?? []).map((v) => v.id));
+        const sections = ordered.map((model) => {
+          const list = byModel.get(model) ?? [];
+          const others = ordered.filter((m) => m !== model);
+          const onlyHere = list.filter((v) => others.every((m) => !ids(m).has(v.id))).map((v) => v.id);
+          const lines = list.map((v) => {
+            const traits = [v.name, v.gender, v.language, v.accent ? `${v.accent} accent` : null].filter(Boolean).join(", ");
+            const tags =
+              v.emotion_tags && v.emotion_tags.length > 0
+                ? ` [experimental, reads emotion tags: ${v.emotion_tags.map((t) => `[${t}]`).join(" ")}]`
+                : v.experimental
+                  ? " [experimental]"
+                  : "";
+            return `- ${v.id} (${traits}): ${v.description ?? "no description"}${tags}`;
+          });
+          const head =
+            `## ${model}${model === config.ttsModel ? " (default)" : ""}: ${list.length} voices` +
+            (model === "paxa-tts-flash-v2"
+              ? ". Each speaks Thai, English, and Mandarin Chinese, and every one reads direction tags (see the speech tools)."
+              : ". Legacy roster: one language per voice, regional Thai accents where noted, emotion tags on the experimental voices.") +
+            (onlyHere.length > 0 ? ` Only on this model: ${onlyHere.join(", ")}.` : "");
+          return `${head}\n${lines.join("\n")}`;
         });
         return text(
-          `${voices.length} voices. Default voice: ${config.defaultVoice}. ` +
-            `Thai leads: khanomkrok (male) and nomyen (female). ${VOICE_GUIDANCE} ` +
-            "An emotion tag is written into the text, optionally weighted 0 to 1 as in [sad:0.5], and holds " +
-            `until the next tag; tag characters bill as text.\n${lines.join("\n")}`,
+          `Default voice: ${config.defaultVoice}. Default model: ${config.ttsModel} (PAXA_TTS_MODEL, or the model parameter per call). ` +
+            `Thai leads: khanomkrok (male) and nomyen (female). ${VOICE_GUIDANCE}\n\n${sections.join("\n\n")}`,
         );
       } catch (err) {
         return failure(err);

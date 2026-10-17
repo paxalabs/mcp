@@ -119,8 +119,8 @@ function phraseCacheDir(): string {
  * voice and a hash of the exact text, so a reworded phrase or another voice
  * never replays a stale file.
  */
-function phraseCachePath(kind: string, text: string, voice: string): string {
-  const hash = createHash("sha256").update(`${voice}\n${text}`).digest("hex").slice(0, 12);
+function phraseCachePath(kind: string, text: string, voice: string, model: string): string {
+  const hash = createHash("sha256").update(`${model}\n${voice}\n${text}`).digest("hex").slice(0, 12);
   const safeVoice = voice.replace(/[^A-Za-z0-9_-]/g, "_");
   return join(phraseCacheDir(), `${kind}-${safeVoice}-${hash}.${playbackFormat()}`);
 }
@@ -192,7 +192,7 @@ export async function runSay(args: string[]): Promise<void> {
   // Cached: a built-in phrase, or text the user supplied together with --cache.
   // A message taken from a hook payload is never cached, even with --cache.
   const cacheAs = builtin ?? (cacheWanted && !hookMode ? "custom" : undefined);
-  const cache = cacheAs ? phraseCachePath(cacheAs, text, chosenVoice) : undefined;
+  const cache = cacheAs ? phraseCachePath(cacheAs, text, chosenVoice, config.ttsModel) : undefined;
   if (cache && existsSync(cache) && (await replayPhrase(cache))) return;
 
   const apiKey = config.apiKey ?? keyFromClaudeConfig();
@@ -203,7 +203,7 @@ export async function runSay(args: string[]): Promise<void> {
     buffered: (t, v, format, options) => client.tts({ text: t, voice: v, format, ...options }),
     stream: (t, v, signal, options) => client.ttsStream({ text: t, voice: v, format: "mp3", ...options }, signal),
   });
-  const [segment] = engine.enqueueTts([text], chosenVoice, true);
+  const [segment] = engine.enqueueTts([text], chosenVoice, true, { model: config.ttsModel });
   const settled = await engine.waitFor(segment as NonNullable<typeof segment>);
   if (settled.status === "done" && cache) storePhrase(settled.file, cache);
   engine.dispose();

@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 
-import { MISSING_KEY_MESSAGE } from "./config.js";
+import { DEFAULT_TTS_MODEL, MISSING_KEY_MESSAGE, type TtsModel } from "./config.js";
 
-export const TTS_MODEL = "paxa-tts-flash-v1";
+/** Used when a request names no model. Prefer passing the configured model explicitly. */
+export const TTS_MODEL: TtsModel = DEFAULT_TTS_MODEL;
 export const TRANSLATE_MODEL = "paxa-translation-lite-v1";
 export const OCR_MODEL = "paxa-ocr-lite-v1";
 export const STT_MODEL = "paxa-stt-lite-v1-preview";
@@ -40,7 +41,14 @@ const HINTS: Record<string, string> = {
     "Requests per minute for the plan are exhausted (one window across the whole account). " +
     "Wait a minute and retry, or the user can upgrade the plan.",
   concurrency_limited: "Too many requests in flight on this account. Wait for one to finish, then retry.",
-  unknown_voice: "Pick a voice id from list_voices.",
+  unknown_voice:
+    "That voice id is not served by the model this request used. The roster differs per model: run list_voices, " +
+    "and pass model \"paxa-tts-flash-v1\" for a voice that exists only there (donut, toast, padthai, yoyo, somtam, larb, khaosoi, roti).",
+  tag_invalid:
+    "The text holds a bracketed tag the model refuses; nothing was charged. On paxa-tts-flash-v2 that is a direction " +
+    "the model cannot do (an accent, singing, an untrained sound), a bracket without letters, or a weight that is not " +
+    "a number; on v1 it is a word outside the emotion tag list. Remove or reword the tag. " +
+    "Reference: https://paxalabs.com/docs/directions",
   text_too_long: "Split the text into shorter requests.",
   request_too_large:
     "Shorten the text, context, instructions, or glossary; every field counts toward the request ceiling.",
@@ -130,6 +138,7 @@ export interface TtsRequest {
 
 /** Per-request synthesis settings shared by the speech tools and the engine. */
 export interface SpeechOptions {
+  model?: TtsModel;
   language?: TtsLanguage;
   speed?: number;
 }
