@@ -123,7 +123,7 @@ const manifest = {
       title: "Default voice",
       description: "Voice id used when a request does not pick one. Ask for list_voices to see the roster.",
       required: false,
-      default: "nomyen",
+      default: "foithong",
     },
     tts_model: {
       type: "string",

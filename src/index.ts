@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { MISSING_KEY_MESSAGE, loadConfig } from "./config.js";
+import { MISSING_KEY_MESSAGE, defaultVoiceWarning, loadConfig } from "./config.js";
 
 async function main(): Promise<void> {
   // `paxa say ...` speaks a line and exits; with no subcommand we are the MCP
@@ -19,6 +19,8 @@ async function main(): Promise<void> {
 
   const config = loadConfig();
   if (!config.apiKey) console.error(`Warning: ${MISSING_KEY_MESSAGE}`);
+  const voiceWarning = defaultVoiceWarning(config);
+  if (voiceWarning) console.error(`Warning: ${voiceWarning}`);
 
   const client = new PaxaClient(config.baseUrl, config.apiKey);
   const engine = new SpeechEngine({

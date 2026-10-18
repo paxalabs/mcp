@@ -22,7 +22,7 @@ import { homedir } from "node:os";
 import { dirname, extname, join } from "node:path";
 
 import { PaxaClient } from "./api.js";
-import { MISSING_KEY_MESSAGE, loadConfig } from "./config.js";
+import { MISSING_KEY_MESSAGE, defaultVoiceWarning, loadConfig } from "./config.js";
 import { playbackFormat, playClip } from "./player.js";
 import { SpeechEngine } from "./queue.js";
 
@@ -48,7 +48,7 @@ function usage(): never {
       "       echo <text> | paxa say [--voice <id>] [--cache]\n" +
       "       (as a Claude Code hook, with the hook JSON on stdin)\n" +
       "\n" +
-      "  --voice <id>  voice from list_voices (default: PAXA_DEFAULT_VOICE or nomyen)\n" +
+      "  --voice <id>  voice from list_voices (default: PAXA_DEFAULT_VOICE or foithong)\n" +
       "  --cache       keep the audio and replay it next time, for fixed phrases in hook commands\n",
   );
   process.exit(64);
@@ -189,6 +189,8 @@ export async function runSay(args: string[]): Promise<void> {
 
   const config = loadConfig();
   const chosenVoice = voice ?? config.defaultVoice;
+  const voiceWarning = voice ? undefined : defaultVoiceWarning(config);
+  if (voiceWarning) warn(voiceWarning);
   // Cached: a built-in phrase, or text the user supplied together with --cache.
   // A message taken from a hook payload is never cached, even with --cache.
   const cacheAs = builtin ?? (cacheWanted && !hookMode ? "custom" : undefined);

@@ -257,7 +257,7 @@ through the same session.
 | `PAXA_API_KEY` | yes | | Your API key. The server starts without it, but every tool that calls the API then fails with setup instructions the agent can relay |
 | `PAXA_OUTPUT_DIR` | no | working directory | Where `text_to_speech` saves files |
 | `PAXA_TTS_MODEL` | no | `paxa-tts-flash-v2` | Speech model for every call that does not pick one. v2 has 50 voices that each speak Thai, English, and Mandarin, and all read direction tags. `paxa-tts-flash-v1` only for regional Thai accents, the fixed emotion tags on `khanomchan` and `kaprao`, or one of the eight voices v2 does not carry |
-| `PAXA_DEFAULT_VOICE` | no | `nomyen` | Voice used when a tool call does not pick one. On v2 every voice speaks all three languages, so pick by character from `list_voices` |
+| `PAXA_DEFAULT_VOICE` | no | `foithong` | Voice used when a tool call does not pick one. On v2 every voice speaks all three languages, so pick by character from `list_voices` |
 | `PAXA_VOCABULARY` | no | | Keyword pinning for `transcribe_audio`: comma-separated names and terms the transcript should spell as written (product names, people, jargon) |
 | `PAXA_DEFAULT_SPEED` | no | `1` | Speaking rate used when a call does not pick one, 0.5 to 1.5. Pitch is preserved and the price is the same; 1.2 to 1.3 suits long reads |
 | `PAXA_MIC` | no | system default | Microphone device for `listen`: an AVFoundation device name on macOS, a PulseAudio or ALSA device on Linux, a DirectShow device name on Windows |

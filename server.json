@@ -8,7 +8,7 @@
     "url": "https://github.com/paxalabs/mcp",
     "source": "github"
   },
-  "version": "0.1.0-beta.14",
+  "version": "0.1.0-beta.15",
   "icons": [
     {
       "src": "https://raw.githubusercontent.com/paxalabs/mcp/main/assets/icon.png",
@@ -21,7 +21,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@paxalabs/mcp",
-      "version": "0.1.0-beta.14",
+      "version": "0.1.0-beta.15",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
@@ -43,7 +43,7 @@
         },
         {
           "name": "PAXA_DEFAULT_VOICE",
-          "description": "Voice id used when a call does not pick one (default: nomyen)",
+          "description": "Voice id used when a call does not pick one (default: foithong)",
           "isRequired": false,
           "isSecret": false,
           "format": "string"

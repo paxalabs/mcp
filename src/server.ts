@@ -24,7 +24,7 @@ import {
   type TranslateRequest,
 } from "./api.js";
 import { chunkText } from "./chunk.js";
-import { MISSING_KEY_MESSAGE, TTS_MODELS, parseVocabulary, type Config, type TtsModel } from "./config.js";
+import { MISSING_KEY_MESSAGE, TTS_MODELS, defaultVoiceWarning, parseVocabulary, type Config, type TtsModel } from "./config.js";
 import { buildCues, findPauses, markSpacing, toSrt, toVtt, type WordSpan } from "./captions.js";
 import { listenOnce, realtimeSupported } from "./listen.js";
 import { FFMPEG_INSTALL_HINT, concatAudio, extractAudio, hasFfmpeg, hasFfprobe, probeDuration } from "./media.js";
@@ -51,8 +51,9 @@ const PACKAGE_VERSION = (createRequire(import.meta.url)("../package.json") as { 
 const ICON_URL = "https://raw.githubusercontent.com/paxalabs/mcp/main/assets/icon.png";
 /** A short note to the agent about the newest tools, shown with the server instructions at connect time. */
 const WHATS_NEW =
-  `New in ${PACKAGE_VERSION}: speech runs on Paxa TTS Flash v2 by default. Its 50 voices each speak Thai, English, ` +
-  "and Mandarin, and every voice reads direction tags written into the text, such as [whispering], [laughs], " +
+  `New in ${PACKAGE_VERSION}: the default voice is foithong (was nomyen), and list_voices and the voice parameter ` +
+  "name recommended voices. Since 0.1.0-beta.14 speech runs on Paxa TTS Flash v2 by default: its 50 voices each " +
+  "speak Thai, English, and Mandarin, and every voice reads direction tags written into the text, such as [whispering], [laughs], " +
   "[speaking slowly] or <emph>, so try them when the delivery matters. Pass model paxa-tts-flash-v1 only for " +
   "regional Thai accents or a voice v2 does not carry. Also: transcribe_audio takes video files and lists pauses to " +
   "cut, text_to_speech takes long scripts and writes matching srt or vtt captions, speed sets the rate, listen records " +
@@ -192,6 +193,19 @@ export const VOICE_GUIDANCE =
   "around one language and reads the others with an accent (English voices there: donut, cookie, toast, " +
   "latte, espresso, mocha), four Thai voices carry a regional accent, and khanomchan and kaprao read the " +
   "fixed emotion tag set. Follow the user's preference when they have one.";
+/** The voices we recommend when nothing about the request points at a particular character. */
+const VOICE_PICKS =
+  "Recommended for general use: foithong (female) and massaman (male); khanomkrok (male), sanaechan (female), and " +
+  "nomyen (female) are also good.";
+/** Told once at connect time: users tend to have a favorite voice and talking style, so offer the choice once and remember it. */
+const VOICE_PREFERENCE =
+  "Voices have distinct styles and users tend to have a favorite, and many also prefer a talking style. Use the " +
+  "default voice without asking, but the first time the user engages with speech or comments on how it sounds, " +
+  "offer to pick a voice (list_voices, or a short sample of two or three) and a talking style, written on " +
+  "paxa-tts-flash-v2 as a direction tag at the start of the text, such as [calm, casual] or [relaxed and friendly, " +
+  "speaking softly]; play a sample of each style you offer. Remember both where you keep the user's preferences and " +
+  "apply them on every call. PAXA_DEFAULT_VOICE in this server's config makes the voice the default without " +
+  "passing it; the style has no setting, so it lives in your preferences. ";
 const MODEL_HINT =
   '"paxa-tts-flash-v2" (default) has 50 voices that each speak Thai, English, and Mandarin, and every one reads ' +
   "direction tags written into the text. Pick \"paxa-tts-flash-v1\" only for its legacy features: regional Thai " +
@@ -213,7 +227,7 @@ function speechOptions(
 }
 
 function voiceHint(config: Config): string {
-  return `Voice id from list_voices (default "${config.defaultVoice}", a Thai voice). ${VOICE_GUIDANCE}`;
+  return `Voice id from list_voices (default "${config.defaultVoice}"). ${VOICE_PICKS} ${VOICE_GUIDANCE}`;
 }
 
 function timestampName(voice: string, format: string): string {
@@ -226,6 +240,8 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
     ? ""
     : ` WARNING: ${MISSING_KEY_MESSAGE} Until then every tool that calls the API fails with ` +
       "that message; control_playback and play_audio still work.";
+  const voiceWarning = defaultVoiceWarning(config);
+  const defaultVoiceNote = voiceWarning ? ` WARNING: ${voiceWarning} Tell the user.` : "";
   const server = new McpServer(
     {
       name: "paxalabs",
@@ -245,8 +261,10 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         "subtitles; listen records one spoken turn from the microphone and returns its transcript. " +
         "Paid tools spend account credits " +
         "(check with get_account). " +
+        VOICE_PREFERENCE +
         WHATS_NEW +
-        keyWarning,
+        keyWarning +
+        defaultVoiceNote,
     },
   );
 
@@ -1136,7 +1154,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         });
         return text(
           `Default voice: ${config.defaultVoice}. Default model: ${config.ttsModel} (PAXA_TTS_MODEL, or the model parameter per call). ` +
-            `Thai leads: khanomkrok (male) and nomyen (female). ${VOICE_GUIDANCE}\n\n${sections.join("\n\n")}`,
+            `${VOICE_PICKS} ${VOICE_GUIDANCE}\n\n${sections.join("\n\n")}`,
         );
       } catch (err) {
         return failure(err);

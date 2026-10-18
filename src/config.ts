@@ -2,6 +2,8 @@
 export const TTS_MODELS = ["paxa-tts-flash-v2", "paxa-tts-flash-v1"] as const;
 export type TtsModel = (typeof TTS_MODELS)[number];
 export const DEFAULT_TTS_MODEL: TtsModel = "paxa-tts-flash-v2";
+/** Voices only paxa-tts-flash-v1 serves (checked live 2026-10-17); on v2 they answer unknown_voice. */
+export const V1_ONLY_VOICES = ["donut", "toast", "padthai", "yoyo", "somtam", "larb", "khaosoi", "roti"];
 
 export interface Config {
   /** Undefined when PAXA_API_KEY is not set; the server still starts so the agent can relay MISSING_KEY_MESSAGE. */
@@ -34,11 +36,25 @@ export const MISSING_KEY_MESSAGE =
   'and pass it to the server, e.g. { "env": { "PAXA_API_KEY": "pxa_..." } } in their MCP client ' +
   "configuration, then restart the server.";
 
+/**
+ * A warning when PAXA_DEFAULT_VOICE names a voice the configured model does not carry, typically a setup from
+ * before 0.1.0-beta.14 (when v1 was the default and the README suggested donut or toast); undefined otherwise.
+ */
+export function defaultVoiceWarning(config: Config): string | undefined {
+  if (config.ttsModel === "paxa-tts-flash-v1" || !V1_ONLY_VOICES.includes(config.defaultVoice)) return undefined;
+  return (
+    `PAXA_DEFAULT_VOICE "${config.defaultVoice}" exists only on paxa-tts-flash-v1, but speech runs on ` +
+    `${config.ttsModel} since 0.1.0-beta.14, so every speech call that does not pick a voice fails with ` +
+    "unknown_voice. Set PAXA_DEFAULT_VOICE to a v2 voice from list_voices, or set PAXA_TTS_MODEL to " +
+    "paxa-tts-flash-v1 to stay on v1."
+  );
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const apiKey = env.PAXA_API_KEY?.trim() || undefined;
   const baseUrl = (env.PAXA_BASE_URL?.trim() || "https://api.paxalabs.com").replace(/\/+$/, "");
   const outputDir = env.PAXA_OUTPUT_DIR?.trim() || process.cwd();
-  const defaultVoice = env.PAXA_DEFAULT_VOICE?.trim() || "nomyen";
+  const defaultVoice = env.PAXA_DEFAULT_VOICE?.trim() || "foithong";
   const modelRaw = env.PAXA_TTS_MODEL?.trim();
   let ttsModel: TtsModel = DEFAULT_TTS_MODEL;
   if (modelRaw) {
