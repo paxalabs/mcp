@@ -409,6 +409,11 @@ export class SpeechEngine {
     if (this.history.length > HISTORY_LIMIT) this.history.splice(0, this.history.length - HISTORY_LIMIT);
   }
 
+  /** A path in this engine's temp directory, which dispose() removes: for audio that lives only as long as the session. */
+  scratchPath(name: string): string {
+    return join(this.ensureTmpDir(), name);
+  }
+
   private ensureTmpDir(): string {
     if (!this.tmpDir) this.tmpDir = mkdtempSync(join(tmpdir(), "paxa-mcp-"));
     return this.tmpDir;

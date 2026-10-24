@@ -43,7 +43,16 @@ const HINTS: Record<string, string> = {
   concurrency_limited: "Too many requests in flight on this account. Wait for one to finish, then retry.",
   unknown_voice:
     "That voice id is not served by the model this request used. The roster differs per model: run list_voices, " +
-    "and pass model \"paxa-tts-flash-v1\" for a voice that exists only there (donut, toast, padthai, yoyo, somtam, larb, khaosoi, roti).",
+    "and pass model \"paxa-tts-flash-v1\" for a voice that exists only there (donut, toast, padthai, yoyo, somtam, larb, khaosoi, roti). " +
+    "A designed voice id (voice_...) speaks only on paxa-tts-flash-v2, only for the account that saved it, and stops once " +
+    "deleted; list_voices shows the account's designed voices.",
+  draft_invalid:
+    "The draft did not open: it was altered or cut short, belongs to another account, or predates a platform update. " +
+    "Nothing was charged. Pass the draft handle design_voice or refine_voice printed, or design the voice again.",
+  voice_name_taken: "That name belongs to a catalog voice, which no designed voice can take. Nothing was saved; choose another name.",
+  voice_slots_full:
+    "The account holds as many designed voices as its plan allows. Nothing was saved. Ask the user whether to delete " +
+    "one (delete_voice, which cannot be undone) or upgrade the plan; list_voices shows the slots in use.",
   tag_invalid:
     "The text holds a bracketed tag the model refuses; nothing was charged. On paxa-tts-flash-v2 that is a direction " +
     "the model cannot do (an accent, singing, an untrained sound), a bracket without letters, or a weight that is not " +
@@ -155,6 +164,48 @@ export interface Voice {
   emotion_tags?: string[];
   description: string | null;
   model: string;
+}
+
+/** The words that describe a designed voice, as the design, save, list, and rename endpoints return them. */
+export interface DesignedVoiceWords {
+  name: string;
+  /** Who the voice is, in a few words. */
+  role: string;
+  /** How the voice sounds, in one sentence. */
+  description: string;
+  gender: "f" | "m";
+  /** The one language the voice was designed to speak. */
+  language: "th" | "en" | "zh";
+  model: string;
+}
+
+/** A voice saved to the account. Its id (voice_...) is what the voice field of a v2 speech request accepts. */
+export interface DesignedVoice extends DesignedVoiceWords {
+  id: string;
+  created_at: string;
+}
+
+export interface VoiceDesignRequest {
+  /** Who the voice is and how it sounds, 1 to 1000 characters. Sent alone, for a new voice. */
+  description?: string;
+  /** A draft an earlier design returned, sent with an instruction to refine it. */
+  draft?: string;
+  /** What to change about the draft's voice, 1 to 500 characters. */
+  instruction?: string;
+}
+
+export interface VoiceDesignResponse {
+  /** The voice, sealed for this account: send it back to refine, or save it. */
+  draft: string;
+  voice: DesignedVoiceWords & { line: string };
+  /** The example line spoken in the voice, as base64 MP3. */
+  audio: string;
+  usage: { credits: number };
+}
+
+export interface DesignedVoiceList {
+  voices: DesignedVoice[];
+  slots: { used: number; limit: number };
 }
 
 /** Set on every JSON response so a tool can quote it, and send_feedback can point at it. */
@@ -321,7 +372,8 @@ export interface AccountInfo {
     last_used_at: string | null;
   };
   balance: { wallet: number; plan: number; total: number };
-  plan: { key: string; rpm: number; concurrency: number; monthly_credits: number };
+  /** rpm null means no per-minute limit. concurrency is documented as an integer, but the free plan answers null. */
+  plan: { key: string; rpm: number | null; concurrency: number | null; monthly_credits: number };
 }
 
 /** A signal that aborts when either input aborts. */
@@ -500,6 +552,38 @@ export class PaxaClient {
   async voices(): Promise<Voice[]> {
     const res = await this.request("/v1/voices");
     return ((await res.json()) as { voices: Voice[] }).voices;
+  }
+
+  /**
+   * Design a voice from a description, or refine a draft with an instruction. 5 credits a call. The endpoint
+   * refuses an Idempotency-Key (a retry designs a new voice and is charged again), so none is sent.
+   */
+  async designVoice(req: VoiceDesignRequest): Promise<VoiceDesignResponse & WithRequestId> {
+    const res = await this.request("/v1/voices/design", { method: "POST", body: req, timeoutMs: 180_000 });
+    return this.json<VoiceDesignResponse>(res);
+  }
+
+  /** Save a draft as one of the account's voices. Free; saving the same draft again returns the same voice. */
+  async saveVoice(req: { draft: string; name?: string }): Promise<DesignedVoice & WithRequestId> {
+    const res = await this.request("/v1/voices/designed", { method: "POST", body: req });
+    return this.json<DesignedVoice>(res);
+  }
+
+  /** The account's designed voices, oldest first, with the slots in use and the plan's limit. Free. */
+  async designedVoices(): Promise<DesignedVoiceList> {
+    const res = await this.request("/v1/voices/designed");
+    return (await res.json()) as DesignedVoiceList;
+  }
+
+  async renameVoice(id: string, name: string): Promise<DesignedVoice & WithRequestId> {
+    const res = await this.request(`/v1/voices/designed/${encodeURIComponent(id)}`, { method: "PATCH", body: { name } });
+    return this.json<DesignedVoice>(res);
+  }
+
+  /** Delete a designed voice and free its slot. Cannot be undone. */
+  async deleteVoice(id: string): Promise<{ id: string } & WithRequestId> {
+    const res = await this.request(`/v1/voices/designed/${encodeURIComponent(id)}`, { method: "DELETE" });
+    return this.json<{ id: string }>(res);
   }
 
   async models(): Promise<PaxaModel[]> {

@@ -64,18 +64,23 @@ into `~/.cursor/mcp.json` or VS Code's MCP settings. Then replace
 
 | Tool | What it does | Credits |
 | --- | --- | --- |
-| `speak` | Synthesize a short line and play it through the speakers, blocking until done | 10 per 1000 chars |
-| `queue_speech` | Read long content aloud: auto-chunks, synthesizes ahead while playing, returns immediately | 10 per 1000 chars |
+| `speak` | Synthesize a short line and play it through the speakers, blocking until done | 10 per 1000 chars (12.5 in a designed voice) |
+| `queue_speech` | Read long content aloud: auto-chunks, synthesizes ahead while playing, returns immediately | 10 per 1000 chars (12.5 in a designed voice) |
 | `control_playback` | Control the shared audio queue: `status`, `pause`, `resume`, `skip`, `clear` | free |
 | `play_audio` | Play a local audio file through the speakers | free |
-| `text_to_speech` | Synthesize speech to an audio file (mp3, opus, wav) without playing it: long scripts are split and joined into one file, and `subtitles` writes a matching srt or vtt | 10 per 1000 chars (12.5 with subtitles) |
+| `text_to_speech` | Synthesize speech to an audio file (mp3, opus, wav) without playing it: long scripts are split and joined into one file, and `subtitles` writes a matching srt or vtt | 10 per 1000 chars (12.5 with subtitles or in a designed voice, 15 with both) |
+| `design_voice` | Make a new voice from a written description and play the line it speaks | 5 per call |
+| `refine_voice` | Change a draft voice in words, such as "a little lower and slower", and play its new line | 5 per call |
+| `save_voice` | Save a draft as one of your voices, with an id the speech tools accept | free |
+| `rename_voice` | Rename one of your designed voices; the id and sound stay | free |
+| `delete_voice` | Delete one of your designed voices and free its slot | free |
 | `translate_to_thai` | Translate any language into Thai, with formality, glossary, and context controls | 25 per 1000 chars |
 | `ocr_document` | OCR a local PDF, PNG, JPEG, or WebP into Markdown or structured blocks | 6.5 per page |
 | `extract_fields` | Fill a schema of typed fields (Thai IDs, dates, amounts, banks, line items) from a local PDF or image; every value is printed in the document or null with the reason | 13 per page (19.5 for schemas over 50 fields) |
 | `listen` | Record one spoken turn from the microphone and return its transcript; the API detects when the user stops talking | 12.5 per minute listened |
 | `send_feedback` | Rate an output or report a problem to the Paxa team, tied to the request ids the tools print | free |
 | `transcribe_audio` | Transcribe a local recording or video (Thai, English, mixed) to text, with optional speaker labels, word timings, srt or vtt subtitles, and a list of pauses to cut | 8.33 per minute |
-| `list_voices` | The TTS voice roster with character notes | free |
+| `list_voices` | Your designed voices and slots, then the TTS voice roster with character notes | free |
 | `list_models` | Available models, limits, and pricing | free |
 | `get_account` | Credit balance, plan, and rate limits | free |
 
@@ -210,6 +215,23 @@ Northern, Southern), the fixed emotion tags on `khanomchan` and `kaprao`,
 or one of the eight voices v2 does not carry (donut, toast, padthai, yoyo,
 somtam, larb, khaosoi, roti). Same price and limits on both.
 
+## Design your own voice
+
+When no catalog voice fits, describe the one you want. `design_voice` turns
+one or two sentences (who is speaking, how they sound, where it will be
+heard, and the language they speak) into a voice and plays the line it
+speaks. `refine_voice` takes one change at a time, such as "a little lower
+and slower", and the rest of the voice stays; earlier drafts stay usable,
+so you can go back to one. `save_voice` keeps the draft you like
+under an id (`voice_...`) that `speak`, `queue_speech`, and
+`text_to_speech` accept on Paxa TTS Flash v2; set it as
+`PAXA_DEFAULT_VOICE` to make it the default. Each design or change costs 5
+credits, saving is free, and speech in a designed voice costs 1.25x. Your
+plan sets how many voices you keep (Free 1, Starter 3, Standard 10, Pro
+50); `list_voices` shows them with the slots in use, `rename_voice`
+renames one, and `delete_voice` frees one. The [voice description guide](https://paxalabs.com/guides/how-to-describe-a-voice-for-ai)
+has examples.
+
 ## Content creation
 
 Three things creators asked for, each the local half of an API call:
@@ -257,7 +279,7 @@ through the same session.
 | `PAXA_API_KEY` | yes | | Your API key. The server starts without it, but every tool that calls the API then fails with setup instructions the agent can relay |
 | `PAXA_OUTPUT_DIR` | no | working directory | Where `text_to_speech` saves files |
 | `PAXA_TTS_MODEL` | no | `paxa-tts-flash-v2` | Speech model for every call that does not pick one. v2 has 50 voices that each speak Thai, English, and Mandarin, and all read direction tags. `paxa-tts-flash-v1` only for regional Thai accents, the fixed emotion tags on `khanomchan` and `kaprao`, or one of the eight voices v2 does not carry |
-| `PAXA_DEFAULT_VOICE` | no | `foithong` | Voice used when a tool call does not pick one. On v2 every voice speaks all three languages, so pick by character from `list_voices` |
+| `PAXA_DEFAULT_VOICE` | no | `foithong` | Voice used when a tool call does not pick one: a catalog voice from `list_voices`, or one of your designed voices (`voice_...`). On v2 every catalog voice speaks all three languages, so pick by character |
 | `PAXA_VOCABULARY` | no | | Keyword pinning for `transcribe_audio`: comma-separated names and terms the transcript should spell as written (product names, people, jargon) |
 | `PAXA_DEFAULT_SPEED` | no | `1` | Speaking rate used when a call does not pick one, 0.5 to 1.5. Pitch is preserved and the price is the same; 1.2 to 1.3 suits long reads |
 | `PAXA_MIC` | no | system default | Microphone device for `listen`: an AVFoundation device name on macOS, a PulseAudio or ALSA device on Linux, a DirectShow device name on Windows |

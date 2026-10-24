@@ -48,7 +48,7 @@ function usage(): never {
       "       echo <text> | paxa say [--voice <id>] [--cache]\n" +
       "       (as a Claude Code hook, with the hook JSON on stdin)\n" +
       "\n" +
-      "  --voice <id>  voice from list_voices (default: PAXA_DEFAULT_VOICE or foithong)\n" +
+      "  --voice <id>  voice from list_voices, or a designed voice's id (default: PAXA_DEFAULT_VOICE or foithong)\n" +
       "  --cache       keep the audio and replay it next time, for fixed phrases in hook commands\n",
   );
   process.exit(64);

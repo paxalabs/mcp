@@ -36,11 +36,24 @@ export const MISSING_KEY_MESSAGE =
   'and pass it to the server, e.g. { "env": { "PAXA_API_KEY": "pxa_..." } } in their MCP client ' +
   "configuration, then restart the server.";
 
+/** A voice the account designed and saved: its id starts with voice_ (case is ignored) and it speaks only on v2. */
+export function isDesignedVoice(voice: string): boolean {
+  return /^voice_/i.test(voice);
+}
+
 /**
- * A warning when PAXA_DEFAULT_VOICE names a voice the configured model does not carry, typically a setup from
- * before 0.1.0-beta.14 (when v1 was the default and the README suggested donut or toast); undefined otherwise.
+ * A warning when PAXA_DEFAULT_VOICE names a voice the configured model does not carry: a setup from before
+ * 0.1.0-beta.14 (when v1 was the default and the README suggested donut or toast), or a designed voice with the
+ * model set to v1; undefined otherwise.
  */
 export function defaultVoiceWarning(config: Config): string | undefined {
+  if (config.ttsModel === "paxa-tts-flash-v1" && isDesignedVoice(config.defaultVoice)) {
+    return (
+      `PAXA_DEFAULT_VOICE "${config.defaultVoice}" is a designed voice, which speaks only on paxa-tts-flash-v2, but ` +
+      "PAXA_TTS_MODEL is paxa-tts-flash-v1, so every speech call that does not pick a voice fails with unknown_voice. " +
+      "Remove PAXA_TTS_MODEL (v2 is the default), or set PAXA_DEFAULT_VOICE to a v1 voice."
+    );
+  }
   if (config.ttsModel === "paxa-tts-flash-v1" || !V1_ONLY_VOICES.includes(config.defaultVoice)) return undefined;
   return (
     `PAXA_DEFAULT_VOICE "${config.defaultVoice}" exists only on paxa-tts-flash-v1, but speech runs on ` +

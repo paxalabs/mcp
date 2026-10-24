@@ -121,7 +121,7 @@ const manifest = {
     default_voice: {
       type: "string",
       title: "Default voice",
-      description: "Voice id used when a request does not pick one. Ask for list_voices to see the roster.",
+      description: "Voice id used when a request does not pick one: a catalog voice (ask for list_voices to see the roster) or one of your designed voices (voice_...).",
       required: false,
       default: "foithong",
     },

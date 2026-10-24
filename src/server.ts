@@ -18,13 +18,23 @@ import {
   PaxaClient,
   TTS_MAX_CHARS,
   type AudioFormat,
+  type DesignedVoiceWords,
   type FeedbackRequest,
   type SpeechOptions,
   type TtsLanguage,
   type TranslateRequest,
+  type VoiceDesignRequest,
 } from "./api.js";
 import { chunkText } from "./chunk.js";
-import { MISSING_KEY_MESSAGE, TTS_MODELS, defaultVoiceWarning, parseVocabulary, type Config, type TtsModel } from "./config.js";
+import {
+  MISSING_KEY_MESSAGE,
+  TTS_MODELS,
+  defaultVoiceWarning,
+  isDesignedVoice,
+  parseVocabulary,
+  type Config,
+  type TtsModel,
+} from "./config.js";
 import { buildCues, findPauses, markSpacing, toSrt, toVtt, type WordSpan } from "./captions.js";
 import { listenOnce, realtimeSupported } from "./listen.js";
 import { FFMPEG_INSTALL_HINT, concatAudio, extractAudio, hasFfmpeg, hasFfprobe, probeDuration } from "./media.js";
@@ -32,6 +42,14 @@ import { SpeechEngine } from "./queue.js";
 import { findRecorder, noRecorderMessage } from "./recorder.js";
 
 const TTS_CREDITS_PER_1K = 10;
+/** Speech in a designed voice bills 1.25 times; the premium adds to the timestamps one (1.5 times with both). */
+const DESIGNED_VOICE_PREMIUM = 0.25;
+const TIMESTAMPS_PREMIUM = 0.25;
+const DESIGN_CREDITS = 5;
+const TTS_DESIGNED_RATE = TTS_CREDITS_PER_1K * (1 + DESIGNED_VOICE_PREMIUM);
+const TTS_TIMED_RATE = TTS_CREDITS_PER_1K * (1 + TIMESTAMPS_PREMIUM);
+const TTS_DESIGNED_TIMED_RATE = TTS_CREDITS_PER_1K * (1 + DESIGNED_VOICE_PREMIUM + TIMESTAMPS_PREMIUM);
+const TTS_PRICE_NOTE = `Costs ${TTS_CREDITS_PER_1K} credits per 1000 characters, ${TTS_DESIGNED_RATE} in a designed voice (voice_...).`;
 const TTS_LANGUAGE_HINT =
   'How codes, digits, and symbols are read: "th", "en", or "zh". Words keep the language of their script. ' +
   'Default "auto" works it out from the text; set it when a code such as AB2039 should be spelled in a particular language.';
@@ -51,8 +69,11 @@ const PACKAGE_VERSION = (createRequire(import.meta.url)("../package.json") as { 
 const ICON_URL = "https://raw.githubusercontent.com/paxalabs/mcp/main/assets/icon.png";
 /** A short note to the agent about the newest tools, shown with the server instructions at connect time. */
 const WHATS_NEW =
-  `New in ${PACKAGE_VERSION}: the default voice is foithong (was nomyen), and list_voices and the voice parameter ` +
-  "name recommended voices. Since 0.1.0-beta.14 speech runs on Paxa TTS Flash v2 by default: its 50 voices each " +
+  `New in ${PACKAGE_VERSION}: voice design. design_voice makes a new voice from a written description and plays its ` +
+  `line (${DESIGN_CREDITS} credits), refine_voice changes it in words, and save_voice keeps it under an id (voice_...) ` +
+  "that the speech tools accept; list_voices shows the account's designed voices. Since 0.1.0-beta.15 the default voice is " +
+  "foithong (was nomyen), and list_voices and the voice parameter name recommended voices. Since 0.1.0-beta.14 " +
+  "speech runs on Paxa TTS Flash v2 by default: its 50 voices each " +
   "speak Thai, English, and Mandarin, and every voice reads direction tags written into the text, such as [whispering], [laughs], " +
   "[speaking slowly] or <emph>, so try them when the delivery matters. Pass model paxa-tts-flash-v1 only for " +
   "regional Thai accents or a voice v2 does not carry. Also: transcribe_audio takes video files and lists pauses to " +
@@ -182,8 +203,80 @@ function formatDuration(seconds: number): string {
   return `${minutes} min ${Math.round(seconds - minutes * 60)} s`;
 }
 
-function estimateTtsCredits(chars: number): number {
-  return Math.max(0.1, (chars * TTS_CREDITS_PER_1K) / 1000);
+/** Credits per 1000 characters for a speech request in this voice, with or without word timings. */
+function ttsRate(voice: string, timed: boolean): number {
+  return TTS_CREDITS_PER_1K * (1 + (isDesignedVoice(voice) ? DESIGNED_VOICE_PREMIUM : 0) + (timed ? TIMESTAMPS_PREMIUM : 0));
+}
+
+function estimateTtsCredits(chars: number, ratePer1k: number): number {
+  return Math.max(0.1, (chars * ratePer1k) / 1000);
+}
+
+const GENDER_WORDS: Record<string, string> = { f: "female", m: "male" };
+const LANGUAGE_WORDS: Record<string, string> = { th: "Thai", en: "English", zh: "Mandarin Chinese" };
+
+/** "Nok (female, Thai), Pharmacist: A calm, warm voice that explains each step slowly." */
+function designedVoiceSummary(v: DesignedVoiceWords): string {
+  const traits = [GENDER_WORDS[v.gender] ?? v.gender, LANGUAGE_WORDS[v.language] ?? v.language].join(", ");
+  return `${v.name} (${traits}), ${v.role}: ${v.description}`;
+}
+
+function notDesignedHere(id: string): string {
+  return (
+    `${id} is not one of this account's designed voices: it was deleted, belongs to another account, or the id is ` +
+    "mistyped. list_voices shows the account's designed voices. Nothing changed."
+  );
+}
+
+/** On the designed-voice endpoints, unknown_voice means the account holds no such voice; the speech hint would mislead. */
+function designedVoiceFailure(err: unknown, id: string): CallToolResult {
+  if (err instanceof PaxaApiError && err.code === "unknown_voice") {
+    return failure(notDesignedHere(id) + (err.requestId ? ` [request id ${err.requestId}]` : ""));
+  }
+  return failure(err);
+}
+
+/** How many unsaved drafts this server keeps; the oldest goes first. */
+const DRAFTS_KEPT = 50;
+
+/**
+ * Drafts from design_voice, kept in this process under short handles (draft-1, draft-2, ...) so an agent passes a
+ * few characters instead of copying a sealed string of up to 4 KB, which a single wrong character would break.
+ * A draft string from elsewhere (the Paxa console) passes through as is.
+ */
+class DraftStore {
+  private readonly drafts = new Map<string, { draft: string; name: string }>();
+  private next = 1;
+
+  add(draft: string, name: string): string {
+    const handle = `draft-${this.next++}`;
+    this.drafts.set(handle, { draft, name });
+    while (this.drafts.size > DRAFTS_KEPT) {
+      const oldest = this.drafts.keys().next().value;
+      if (oldest === undefined) break;
+      this.drafts.delete(oldest);
+    }
+    return handle;
+  }
+
+  /** The sealed draft for a handle this server printed (and the handle), or the value itself when it is not a handle. Throws for a lost handle. */
+  resolve(value: string): { draft: string; handle?: string } {
+    const handle = value.trim();
+    if (!/^draft-\d+$/.test(handle)) return { draft: value };
+    const entry = this.drafts.get(handle);
+    if (!entry) {
+      throw new Error(
+        `${handle} is not in this server's memory: drafts last until the server restarts, and only the last ` +
+          `${DRAFTS_KEPT} are kept. Design the voice again with design_voice.`,
+      );
+    }
+    return { draft: entry.draft, handle };
+  }
+
+  /** "draft-1 (Nok), draft-2 (Nok)", newest last; empty when there are none. */
+  list(): string {
+    return [...this.drafts.entries()].map(([handle, entry]) => `${handle} (${entry.name})`).join(", ");
+  }
 }
 
 /** Shared guidance on choosing a voice; a hint, since some users prefer Thai-accented English. */
@@ -205,7 +298,8 @@ const VOICE_PREFERENCE =
   "paxa-tts-flash-v2 as a direction tag at the start of the text, such as [calm, casual] or [relaxed and friendly, " +
   "speaking softly]; play a sample of each style you offer. Remember both where you keep the user's preferences and " +
   "apply them on every call. PAXA_DEFAULT_VOICE in this server's config makes the voice the default without " +
-  "passing it; the style has no setting, so it lives in your preferences. ";
+  "passing it; the style has no setting, so it lives in your preferences. When no catalog voice fits what the " +
+  "user wants, offer to design one with design_voice. ";
 const MODEL_HINT =
   '"paxa-tts-flash-v2" (default) has 50 voices that each speak Thai, English, and Mandarin, and every one reads ' +
   "direction tags written into the text. Pick \"paxa-tts-flash-v1\" only for its legacy features: regional Thai " +
@@ -227,7 +321,10 @@ function speechOptions(
 }
 
 function voiceHint(config: Config): string {
-  return `Voice id from list_voices (default "${config.defaultVoice}"). ${VOICE_PICKS} ${VOICE_GUIDANCE}`;
+  return (
+    `Voice id from list_voices (default "${config.defaultVoice}"), or a designed voice's id (voice_...) from ` +
+    `save_voice, which speaks only on paxa-tts-flash-v2. ${VOICE_PICKS} ${VOICE_GUIDANCE}`
+  );
 }
 
 function timestampName(voice: string, format: string): string {
@@ -242,6 +339,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
       "that message; control_playback and play_audio still work.";
   const voiceWarning = defaultVoiceWarning(config);
   const defaultVoiceNote = voiceWarning ? ` WARNING: ${voiceWarning} Tell the user.` : "";
+  const drafts = new DraftStore();
   const server = new McpServer(
     {
       name: "paxalabs",
@@ -255,6 +353,8 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         "Paxa Labs API server (Thai, English, and Mandarin Chinese speech AI). speak plays a short line out loud on " +
         "this machine; queue_speech reads long content aloud continuously; control_playback inspects and " +
         "controls the shared audio queue; text_to_speech writes an audio file without playing it; " +
+        "design_voice makes a new voice from a description, refine_voice changes it in words, save_voice keeps it, " +
+        "and rename_voice and delete_voice manage saved ones; " +
         "play_audio replays a local audio file; translate_to_thai translates any language into " +
         "Thai; ocr_document runs OCR on a local PDF or image; extract_fields fills a schema of typed " +
         "fields from a local document; transcribe_audio turns a local recording into text and " +
@@ -277,7 +377,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         "Synthesize a short line with Paxa TTS and play it through this machine's speakers. " +
         "Blocks until playback finishes. Waits for the currently playing audio but jumps ahead " +
         "of queued long-form segments. For long content use queue_speech. " +
-        `Costs ${TTS_CREDITS_PER_1K} credits per 1000 characters. ${EMOTION_TAG_HINT}`,
+        `${TTS_PRICE_NOTE} ${EMOTION_TAG_HINT}`,
       inputSchema: {
         text: z.string().min(1).max(2000).describe("Text to speak, Thai, English, or Mandarin Chinese, up to 2000 characters"),
         voice: z.string().optional().describe(voiceHint(config)),
@@ -319,7 +419,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         "Read long content aloud (stories, articles, books). Splits the text into segments, " +
         "synthesizes ahead while playing, and returns immediately; segments play in order " +
         "after anything already queued. Monitor and control with the control_playback tool. " +
-        `Costs ${TTS_CREDITS_PER_1K} credits per 1000 characters. ${EMOTION_TAG_HINT}`,
+        `${TTS_PRICE_NOTE} ${EMOTION_TAG_HINT}`,
       inputSchema: {
         text: z.string().min(1).max(200_000).describe("Text to read aloud, Thai, English, or Mandarin Chinese"),
         voice: z.string().optional().describe(voiceHint(config)),
@@ -332,9 +432,10 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
       try {
         const chunks = chunkText(input);
         if (chunks.length === 0) return failure("The text contains nothing to read.");
-        const segments = engine.enqueueTts(chunks, voice ?? config.defaultVoice, false, speechOptions(config, language, speed, model));
+        const chosenVoice = voice ?? config.defaultVoice;
+        const segments = engine.enqueueTts(chunks, chosenVoice, false, speechOptions(config, language, speed, model));
         const chars = chunks.reduce((sum, c) => sum + c.length, 0);
-        const credits = (chars * TTS_CREDITS_PER_1K) / 1000;
+        const credits = (chars * ttsRate(chosenVoice, false)) / 1000;
         return text(
           `Queued ${segments.length} segment(s), ${chars} characters, about ${credits.toFixed(1)} credits. ` +
             `Playback starts as soon as the first segment is synthesized. ` +
@@ -438,7 +539,8 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         `narration, audiobooks. Text beyond ${TTS_MAX_CHARS} characters is split at paragraphs and sentences and ` +
         "the parts are joined into one file (needs ffmpeg). With subtitles set, an srt or vtt caption file that " +
         `matches the voice word for word is written next to the audio. Costs ${TTS_CREDITS_PER_1K} credits per ` +
-        `1000 characters, ${TTS_CREDITS_PER_1K * 1.25} with subtitles. ${EMOTION_TAG_HINT}`,
+        `1000 characters, ${TTS_TIMED_RATE} with subtitles, ${TTS_DESIGNED_RATE} in a designed voice (voice_...), ` +
+        `${TTS_DESIGNED_TIMED_RATE} with both. ${EMOTION_TAG_HINT}`,
       inputSchema: {
         text: z
           .string()
@@ -459,7 +561,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
           .optional()
           .describe(
             "Also write a caption file (same name as the audio, .srt or .vtt) timed from the synthesized words: " +
-              "cues break at sentence punctuation, at pauses, and at the line budget, never inside a word, Thai included. Bills 1.25x.",
+              "cues break at sentence punctuation, at pauses, and at the line budget, never inside a word, Thai included. Bills 1.25x, 1.5x in a designed voice.",
           ),
         subtitle_line_chars: z
           .number()
@@ -525,7 +627,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
           audio = await readFile(target);
         }
 
-        const credits = estimateTtsCredits(input.length) * (subtitles ? 1.25 : 1);
+        const credits = estimateTtsCredits(input.length, ttsRate(chosenVoice, Boolean(subtitles)));
         const lines = [
           `Saved ${(audio.length / 1024).toFixed(1)} KiB of ${chosenFormat} audio to ${target} ` +
             `(voice "${chosenVoice}", model ${options.model}, ${input.length} characters` +
@@ -543,6 +645,207 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         return failure(err);
       } finally {
         if (workDir) await rm(workDir, { recursive: true, force: true }).catch(() => {});
+      }
+    },
+  );
+
+  /** One design or refine turn: call the API, keep the draft under a handle, save the line, and play it unless asked not to. */
+  async function designTurn(request: VoiceDesignRequest, from: string | undefined, play: boolean | undefined): Promise<CallToolResult> {
+    const result = await client.designVoice(request);
+    const handle = drafts.add(result.draft, result.voice.name);
+    // The turn is paid for and its draft kept: from here on nothing may hide the handle, so a file or playback
+    // problem becomes a note, and a paused queue (which would block until resumed) is not waited on.
+    let played: string;
+    try {
+      const file = engine.scratchPath(`voice-design-${handle}.mp3`);
+      await writeFile(file, Buffer.from(result.audio, "base64"));
+      if (play === false) {
+        played = `Not played; the line is at ${file}`;
+      } else if (engine.status().state === "paused") {
+        played = `Not played, because playback is paused (control_playback resumes it); the line is at ${file}`;
+      } else {
+        const settled = await engine.waitFor(engine.enqueueFile(file));
+        played =
+          settled.status === "done"
+            ? `Played it; the line is at ${file}`
+            : settled.status === "skipped" || settled.status === "cleared"
+              ? `Playback was ${settled.status}; the line is at ${file}`
+              : `Could not play it (${settled.error ?? "unknown error"}); the line is at ${file}`;
+      }
+    } catch (err) {
+      played = `Could not save or play the line (${err instanceof Error ? err.message : String(err)})`;
+    }
+
+    return text(
+      [
+        `${from ? `Refined ${from} into` : "Designed"} ${handle}: ${designedVoiceSummary(result.voice)}`,
+        `Line: "${result.voice.line}". ${played}.`,
+        `To change it, call refine_voice with draft "${handle}" and an instruction. To keep it, call save_voice with ` +
+          `draft "${handle}". Unsaved drafts last until this server restarts.`,
+        `${result.usage.credits} credits.` + (result.requestId ? ` Request id: ${result.requestId}.` : ""),
+      ].join("\n"),
+    );
+  }
+
+  const PLAY_HINT = "Play the voice's line out loud (default true). The line is saved to a file either way.";
+  const DRAFT_HINT =
+    'A draft handle that design_voice or refine_voice printed (such as "draft-2"), or a draft string from the Paxa console.';
+
+  server.registerTool(
+    "design_voice",
+    {
+      title: "Design a new voice",
+      annotations: { title: "Design a new voice", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      description:
+        "Make a new voice from a written description and play the line it speaks through this machine's speakers. " +
+        "Use it when the user wants a voice the catalog does not have. Describe who is speaking and how they sound in " +
+        "one or two sentences: age, gender, role, pitch and texture, pace and manner, where it will be heard, and the " +
+        "language it speaks (a designed voice speaks one language: the one the description names, otherwise the one " +
+        'it is written in), such as "A calm Bangkok pharmacist in her thirties who explains dosages slowly and kindly, ' +
+        'speaking Thai". Leave out real people\'s names, sound effects, and what the voice should say. The result is a ' +
+        "draft, not yet a voice: refine_voice changes it, save_voice keeps it. " +
+        `Costs ${DESIGN_CREDITS} credits per call, the line included; a retry designs again and is charged again.`,
+      inputSchema: {
+        description: z
+          .string()
+          .min(1)
+          .max(1000)
+          .describe("Who the voice is and how it sounds, in English, Thai, or Chinese, up to 1000 characters"),
+        play: z.boolean().optional().describe(PLAY_HINT),
+      },
+    },
+    async ({ description, play }) => {
+      try {
+        return await designTurn({ description }, undefined, play);
+      } catch (err) {
+        return failure(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "refine_voice",
+    {
+      title: "Refine a draft voice",
+      annotations: { title: "Refine a draft voice", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      description:
+        "Change a draft voice in words and play its new line. The instruction says what to change, such as \"a little " +
+        'lower and slower" or "warmer, and older"; the rest of the voice stays, so change one quality at a time. Each ' +
+        "call returns a new draft handle and the earlier handles keep their versions, so the user can go back to one. " +
+        "save_voice keeps the draft the user picks. " +
+        `Costs ${DESIGN_CREDITS} credits per call, the line included; a retry refines again and is charged again.`,
+      inputSchema: {
+        draft: z.string().min(1).max(4096).describe(DRAFT_HINT),
+        instruction: z.string().min(1).max(500).describe("What to change about the voice, up to 500 characters"),
+        play: z.boolean().optional().describe(PLAY_HINT),
+      },
+    },
+    async ({ draft, instruction, play }) => {
+      try {
+        const resolved = drafts.resolve(draft);
+        return await designTurn({ draft: resolved.draft, instruction }, resolved.handle, play);
+      } catch (err) {
+        return failure(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "save_voice",
+    {
+      title: "Save a designed voice",
+      annotations: { title: "Save a designed voice", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      description:
+        "Save a draft from design_voice or refine_voice as one of the account's voices, and get its id (voice_...), " +
+        "which speak, queue_speech, and text_to_speech accept as voice on paxa-tts-flash-v2, for this account only. " +
+        "Save only the draft the user picked. Saving the same draft again returns the same voice and uses no slot. A " +
+        "saved voice's sound never changes: design a new voice for a different sound. The plan sets how many voices " +
+        "the account keeps (Free 1, Starter 3, Standard 10, Pro 50); list_voices shows the slots in use. Free.",
+      inputSchema: {
+        draft: z.string().min(1).max(4096).describe(DRAFT_HINT),
+        name: z
+          .string()
+          .min(1)
+          .max(60)
+          .optional()
+          .describe("A name for the voice, up to 60 characters (default: the name the design gave it). A catalog voice's name is refused."),
+      },
+    },
+    async ({ draft, name }) => {
+      try {
+        const saved = await client.saveVoice({ draft: drafts.resolve(draft).draft, ...(name !== undefined ? { name } : {}) });
+        const lines = [
+          `Saved ${saved.id}: ${designedVoiceSummary(saved)}`,
+          `Pass voice "${saved.id}" to speak, queue_speech, or text_to_speech` +
+            (config.ttsModel === "paxa-tts-flash-v2" ? "" : ' with model "paxa-tts-flash-v2" (this server defaults to v1)') +
+            `; speech in it costs ${ttsRate(saved.id, false)} credits per 1000 characters. To make it the default voice, ` +
+            `set PAXA_DEFAULT_VOICE=${saved.id} in this server's config.`,
+        ];
+        const listed = await client.designedVoices().catch(() => undefined);
+        if (listed) lines.push(`Voice slots: ${listed.slots.used} of ${listed.slots.limit} in use.`);
+        return text(lines.join("\n"));
+      } catch (err) {
+        return failure(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "rename_voice",
+    {
+      title: "Rename a designed voice",
+      annotations: { title: "Rename a designed voice", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      description:
+        "Rename one of the account's designed voices. The id and the sound stay the same, so anything that uses the " +
+        "id keeps working. A catalog voice's name is refused. Free.",
+      inputSchema: {
+        id: z.string().min(1).describe("The designed voice's id (voice_...), from list_voices or save_voice"),
+        name: z.string().min(1).max(60).describe("The new name, up to 60 characters"),
+      },
+    },
+    async ({ id, name }) => {
+      if (!isDesignedVoice(id)) return failure(`${id} is not a designed voice; designed voice ids start with voice_.`);
+      try {
+        const renamed = await client.renameVoice(id, name);
+        return text(`Renamed ${renamed.id} to "${renamed.name}". The id and the sound stay the same.`);
+      } catch (err) {
+        return designedVoiceFailure(err, id);
+      }
+    },
+  );
+
+  server.registerTool(
+    "delete_voice",
+    {
+      title: "Delete a designed voice",
+      annotations: { title: "Delete a designed voice", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+      description:
+        "Delete one of the account's designed voices and free its slot. Cannot be undone: every later request in the " +
+        "voice fails, and designing again does not bring the same sound back. Use it only when the user asks to " +
+        "delete that voice. Free.",
+      inputSchema: {
+        id: z.string().min(1).describe("The designed voice's id (voice_...), from list_voices or save_voice"),
+      },
+    },
+    async ({ id }) => {
+      try {
+        if (!isDesignedVoice(id)) return failure(`${id} is not a designed voice; only designed voices (voice_...) can be deleted.`);
+        const before = await client.designedVoices().catch(() => undefined);
+        const named = before?.voices.find((v) => v.id.toLowerCase() === id.toLowerCase());
+        if (before && !named) return failure(notDesignedHere(id));
+        const deleted = await client.deleteVoice(id).catch((err: unknown) => designedVoiceFailure(err, id));
+        if ("content" in deleted) return deleted;
+        const lines = [`Deleted ${deleted.id}${named ? ` ("${named.name}")` : ""}.`];
+        if (before && named) lines.push(`Voice slots: ${before.slots.used - 1} of ${before.slots.limit} in use.`);
+        if (config.defaultVoice.toLowerCase() === id.toLowerCase()) {
+          lines.push(
+            "PAXA_DEFAULT_VOICE still names this voice, so every speech call that does not pick a voice will fail " +
+              "until the user changes it. Tell the user.",
+          );
+        }
+        return text(lines.join("\n"));
+      } catch (err) {
+        return failure(err);
       }
     },
   );
@@ -1119,12 +1422,34 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
     {
       title: "List voices",
       annotations: { title: "List voices", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-      description: "List the Paxa TTS voice roster: ids, names, gender, language, and character notes. Free.",
+      description:
+        "List the Paxa TTS voices: the account's designed voices with their slots, then the catalog roster with ids, " +
+        "names, gender, language, and character notes. Free.",
       inputSchema: {},
     },
     async () => {
       try {
-        const voices = await client.voices();
+        const [voices, designed] = await Promise.all([
+          client.voices(),
+          client.designedVoices().catch((err: unknown) => (err instanceof PaxaApiError ? err.display() : String(err))),
+        ]);
+        let own: string;
+        if (typeof designed === "string") {
+          own = `## Your designed voices: could not be listed. ${designed}`;
+        } else {
+          const head =
+            `## Your designed voices: ${designed.slots.used} of ${designed.slots.limit} slots in use. They speak only on ` +
+            `paxa-tts-flash-v2, only for this account, at ${TTS_DESIGNED_RATE} credits per 1000 characters.`;
+          own =
+            designed.voices.length === 0
+              ? `${head} None saved yet; design_voice makes one.`
+              : `${head}\n` +
+                designed.voices
+                  .map((v) => `- ${v.id}: ${designedVoiceSummary(v)}` + (v.created_at ? ` Saved ${String(v.created_at).slice(0, 10)}.` : ""))
+                  .join("\n");
+        }
+        const pending = drafts.list();
+        if (pending) own += `\nUnsaved drafts in this session: ${pending}. save_voice keeps one.`;
         // The API lists a voice once per model that serves it; group them so the agent sees two rosters, not duplicates.
         const byModel = new Map<string, typeof voices>();
         for (const v of voices) byModel.set(v.model, [...(byModel.get(v.model) ?? []), v]);
@@ -1154,7 +1479,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         });
         return text(
           `Default voice: ${config.defaultVoice}. Default model: ${config.ttsModel} (PAXA_TTS_MODEL, or the model parameter per call). ` +
-            `${VOICE_PICKS} ${VOICE_GUIDANCE}\n\n${sections.join("\n\n")}`,
+            `${VOICE_PICKS} ${VOICE_GUIDANCE}\n\n${own}\n\n${sections.join("\n\n")}`,
         );
       } catch (err) {
         return failure(err);
@@ -1226,7 +1551,12 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
               ".",
             `Balance: ${account.balance.total} credits (wallet ${account.balance.wallet}, plan ${account.balance.plan}).`,
             `Plan "${account.plan.key}": ${account.plan.monthly_credits} credits per month, ` +
-              `${account.plan.rpm} requests per minute, ${account.plan.concurrency} concurrent requests.`,
+              (account.plan.rpm == null ? "no per-minute request limit" : `${account.plan.rpm} requests per minute`) +
+              ", " +
+              (account.plan.concurrency == null
+                ? "concurrent request limit not reported"
+                : `${account.plan.concurrency} concurrent requests per product`) +
+              ".",
           ].join("\n"),
         );
       } catch (err) {

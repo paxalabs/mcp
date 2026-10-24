@@ -130,8 +130,42 @@ if (process.env.TEST_OCR_FILE) {
   );
 }
 
-// Error paths: bad voice, missing file
+// Voice design (opt in with TEST_VOICE_DESIGN=1: 10 credits, plays three lines, and needs one free voice slot,
+// which it frees again): design, refine, save the FIRST draft (earlier drafts stay usable after a refine), list,
+// speak in the voice, rename, delete.
+if (process.env.TEST_VOICE_DESIGN) {
+  const first = await call(
+    "design_voice",
+    { description: "A friendly barista in her twenties in Melbourne, upbeat and quick, speaking English" },
+    300_000,
+  );
+  const handle = first.body.match(/Designed (draft-\d+)/)?.[1];
+  if (!handle) console.log("WARNING: design_voice printed no draft handle");
+  else {
+    const second = await call("refine_voice", { draft: handle, instruction: "a little lower and calmer" }, 300_000);
+    const refined = second.body.match(/into (draft-\d+)/)?.[1];
+    if (!refined) console.log("WARNING: the refined design printed no draft handle");
+    const saved = await call("save_voice", { draft: handle });
+    const id = saved.body.match(/Saved (voice_\w+)/)?.[1];
+    if (!id) console.log("WARNING: save_voice reported no id");
+    else {
+      const again = await call("save_voice", { draft: handle });
+      if (!again.body.includes(id)) console.log("WARNING: saving the same draft again made a different voice");
+      const listed = await call("list_voices", {});
+      if (!listed.body.includes(id)) console.log("WARNING: list_voices does not show the saved voice");
+      await call("speak", { text: "Your flat white is ready. Have a lovely morning.", voice: id }, 120_000);
+      await call("rename_voice", { id, name: "E2E barista" });
+      await call("delete_voice", { id });
+      const gone = await call("speak", { text: "Gone.", voice: id });
+      if (!gone.res.isError) console.log("WARNING: a deleted voice still spoke");
+    }
+  }
+}
+
+// Error paths: bad voice, missing file, a draft that does not open, deleting a catalog voice
 await call("speak", { text: "test", voice: "not-a-real-voice" });
+await call("save_voice", { draft: "not-a-real-draft" });
+await call("delete_voice", { id: "foithong" });
 await call("ocr_document", { file_path: "/tmp/does-not-exist.pdf" });
 await call("transcribe_audio", { file_path: "/tmp/does-not-exist.mp3" });
 await call("extract_fields", { file_path: "/tmp/does-not-exist.pdf", schema: { fields: { x: { type: "string" } } } });
