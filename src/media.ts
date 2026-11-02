@@ -4,6 +4,7 @@
 // a whole; the tools that need it say so when it is missing.
 import { spawn, spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
+import { appendFile, readFile, writeFile } from "node:fs/promises";
 
 let cachedFfmpeg: boolean | undefined;
 let cachedFfprobe: boolean | undefined;
@@ -63,4 +64,10 @@ export function concatAudio(parts: string[], output: string, format: "mp3" | "op
   writeFileSync(listFile, parts.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join("\n") + "\n");
   const codec = format === "opus" ? ["-c:a", "libopus", "-b:a", "64k"] : ["-c", "copy"];
   return run("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-f", "concat", "-safe", "0", "-i", listFile, ...codec, output]);
+}
+
+/** Join headerless sample files (pcm, mulaw, alaw) in order: with no container, appending the bytes is the whole job. */
+export async function concatRaw(parts: string[], output: string): Promise<void> {
+  await writeFile(output, Buffer.alloc(0));
+  for (const part of parts) await appendFile(output, await readFile(part));
 }

@@ -8,20 +8,28 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 import {
+  AUDIO_FORMATS,
   EXTRACT_MAX_BYTES,
   type ExtractRequest,
   OCR_MAX_BYTES,
+  SAMPLE_RATES,
   STT_MAX_BYTES,
   type SttRequest,
   type SttResponse,
   PaxaApiError,
   PaxaClient,
+  TRANSLATE_LANGUAGES,
   TTS_MAX_CHARS,
   type AudioFormat,
+  isRawFormat,
+  type RawFormat,
   type DesignedVoiceWords,
   type FeedbackRequest,
+  type SampleRate,
   type SpeechOptions,
   type TtsLanguage,
+  type TtsRequest,
+  type TranslateLanguage,
   type TranslateRequest,
   type VoiceDesignRequest,
 } from "./api.js";
@@ -37,7 +45,7 @@ import {
 } from "./config.js";
 import { buildCues, findPauses, markSpacing, toSrt, toVtt, type WordSpan } from "./captions.js";
 import { listenOnce, realtimeSupported } from "./listen.js";
-import { FFMPEG_INSTALL_HINT, concatAudio, extractAudio, hasFfmpeg, hasFfprobe, probeDuration } from "./media.js";
+import { FFMPEG_INSTALL_HINT, concatAudio, concatRaw, extractAudio, hasFfmpeg, hasFfprobe, probeDuration } from "./media.js";
 import { SpeechEngine } from "./queue.js";
 import { findRecorder, noRecorderMessage } from "./recorder.js";
 
@@ -56,29 +64,44 @@ const TTS_LANGUAGE_HINT =
 const SPEED_HINT =
   "Speaking rate from 0.5 to 1.5 as a multiplier on the voice's design speed (1 is as designed; 1.2 to 1.3 " +
   "suits long reads). Pitch is preserved and the price is the same. Defaults to PAXA_DEFAULT_SPEED when set.";
+const STT_LANGUAGE_HINT =
+  'The language the speech is expected in, as a BCP 47 tag such as "th", "en", or "zh". A hint, not a filter: other ' +
+  "languages are still written as spoken. Omit to auto-detect; set it when detection picks the wrong language.";
+const SUBTITLE_COLUMNS_HINT =
+  "Columns per subtitle line, 10 to 120 (default 60, or 32 when the words are mostly Chinese, Japanese, or Korean). " +
+  "A Chinese, Japanese, or Korean character or full-width punctuation mark takes two columns and Thai marks above " +
+  "and below a consonant take none, so one figure fills about the same width in every script.";
+const TEMPERATURE_HINT =
+  "How much the reading (pacing, pauses, breaths, melody) varies from one request to the next, 0 to 2, rounded to " +
+  "the nearest 0.1 (default 0.5). 0 gives the most repeatable reading, such as a line regenerated to match the rest of a " +
+  "voiceover; higher values vary more. Read by paxa-tts-flash-v2; v1 refuses any value but 0.5. Same price.";
 const EMOTION_TAG_HINT =
   "Direction tags (paxa-tts-flash-v2, every voice): words in square brackets written into the text set the delivery " +
   "from that point on, in English, Thai, or Chinese, e.g. [whispering], [speaking slowly, close to the microphone], " +
   "[sad:0.5], or a blend [happy:0.7+sad:0.3]; [neutral] returns to the voice's own delivery. Sounds such as [laughs], " +
   "[sighs], [gasps] play where written; [um] and [hmm] are spoken; <emph>...</emph> and <whisper>...</whisper> mark a " +
-  "span. Nothing in brackets is spoken, tag characters bill as text, and a tag the model cannot do is refused before " +
-  "any charge. On paxa-tts-flash-v1 only khanomchan and kaprao read tags, from a fixed emotion list.";
+  "span. [short pause], [pause], and [long pause] add silence after the word before them, and [pause 300ms] an exact " +
+  "length up to 500 ms. Nothing in brackets is spoken, tag characters bill as text, and a tag the model cannot do is " +
+  "refused before any charge. On paxa-tts-flash-v1 only khanomchan and kaprao read tags, from a fixed emotion list, " +
+  "and no voice reads pause tags.";
 
 /** Single source of truth for the version the server reports: package.json. */
 const PACKAGE_VERSION = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
 const ICON_URL = "https://raw.githubusercontent.com/paxalabs/mcp/main/assets/icon.png";
 /** A short note to the agent about the newest tools, shown with the server instructions at connect time. */
 const WHATS_NEW =
-  `New in ${PACKAGE_VERSION}: voice design. design_voice makes a new voice from a written description and plays its ` +
-  `line (${DESIGN_CREDITS} credits), refine_voice changes it in words, and save_voice keeps it under an id (voice_...) ` +
-  "that the speech tools accept; list_voices shows the account's designed voices. Since 0.1.0-beta.15 the default voice is " +
-  "foithong (was nomyen), and list_voices and the voice parameter name recommended voices. Since 0.1.0-beta.14 " +
-  "speech runs on Paxa TTS Flash v2 by default: its 50 voices each " +
-  "speak Thai, English, and Mandarin, and every voice reads direction tags written into the text, such as [whispering], [laughs], " +
-  "[speaking slowly] or <emph>, so try them when the delivery matters. Pass model paxa-tts-flash-v1 only for " +
-  "regional Thai accents or a voice v2 does not carry. Also: transcribe_audio takes video files and lists pauses to " +
-  "cut, text_to_speech takes long scripts and writes matching srt or vtt captions, speed sets the rate, listen records " +
-  "one spoken turn, and send_feedback reports a wrong output against a result's request id.\n";
+  `New in ${PACKAGE_VERSION}: translate replaces translate_to_thai and writes any of 15 languages (target), from any ` +
+  "of them; transcribe_audio and listen transcribe English and Mandarin as well as Thai; ocr_document reads " +
+  "Simplified Chinese pages; the speech tools take temperature and pause tags such as [pause] or [pause 300ms]; and " +
+  "text_to_speech also writes raw pcm, mulaw, and alaw, with sample_rate for pcm and wav. Since 0.1.0-beta.16: " +
+  `design_voice makes a new voice from a written description (${DESIGN_CREDITS} credits), refine_voice changes it, ` +
+  "and save_voice keeps it under an id (voice_...) that the speech tools accept. Since 0.1.0-beta.14 speech runs on " +
+  "Paxa TTS Flash v2 by default: its 50 voices each speak Thai, English, and Mandarin, and every voice reads " +
+  "direction tags written into the text, such as [whispering], [laughs], [speaking slowly] or <emph>, so try them " +
+  "when the delivery matters. Pass model paxa-tts-flash-v1 only for regional Thai accents or a voice v2 does not " +
+  "carry. Also: transcribe_audio takes video files and lists pauses to cut, text_to_speech takes long scripts and " +
+  "writes matching srt or vtt captions, speed sets the rate, listen records one spoken turn, and send_feedback " +
+  "reports a wrong output against a result's request id.\n";
 
 const AUDIO_EXTENSIONS = new Set([".mp3", ".wav", ".opus", ".ogg", ".flac", ".m4a", ".aac", ".aiff", ".caf"]);
 const OCR_EXTENSIONS = new Set([".pdf", ".png", ".jpg", ".jpeg", ".webp"]);
@@ -214,6 +237,25 @@ function estimateTtsCredits(chars: number, ratePer1k: number): number {
 
 const GENDER_WORDS: Record<string, string> = { f: "female", m: "male" };
 const LANGUAGE_WORDS: Record<string, string> = { th: "Thai", en: "English", zh: "Mandarin Chinese" };
+const TRANSLATE_LANGUAGE_NAMES: Record<TranslateLanguage, string> = {
+  th: "Thai",
+  en: "English",
+  zh: "Chinese",
+  ja: "Japanese",
+  ko: "Korean",
+  ar: "Arabic",
+  fr: "French",
+  de: "German",
+  hi: "Hindi",
+  id: "Indonesian",
+  ms: "Malay",
+  pt: "Portuguese",
+  ru: "Russian",
+  es: "Spanish",
+  vi: "Vietnamese",
+};
+/** Spelled out for the translate tool, so an agent maps a language name to its code without a lookup. */
+const TRANSLATE_LANGUAGE_LIST = TRANSLATE_LANGUAGES.map((code) => `${TRANSLATE_LANGUAGE_NAMES[code]} (${code})`).join(", ");
 
 /** "Nok (female, Thai), Pharmacist: A calm, warm voice that explains each step slowly." */
 function designedVoiceSummary(v: DesignedVoiceWords): string {
@@ -309,14 +351,13 @@ const MODEL_HINT =
 /** The synthesis settings for one call: the call's values first, then the configured defaults. */
 function speechOptions(
   config: Config,
-  language: TtsLanguage | undefined,
-  speed: number | undefined,
-  model: TtsModel | undefined,
+  call: { language?: TtsLanguage | undefined; speed?: number | undefined; model?: TtsModel | undefined; temperature?: number | undefined },
 ): SpeechOptions {
-  const out: SpeechOptions = { model: model ?? config.ttsModel };
-  if (language) out.language = language;
-  const rate = speed ?? config.defaultSpeed;
+  const out: SpeechOptions = { model: call.model ?? config.ttsModel };
+  if (call.language) out.language = call.language;
+  const rate = call.speed ?? config.defaultSpeed;
   if (rate !== undefined) out.speed = rate;
+  if (call.temperature !== undefined) out.temperature = call.temperature;
   return out;
 }
 
@@ -325,6 +366,18 @@ function voiceHint(config: Config): string {
     `Voice id from list_voices (default "${config.defaultVoice}"), or a designed voice's id (voice_...) from ` +
     `save_voice, which speaks only on paxa-tts-flash-v2. ${VOICE_PICKS} ${VOICE_GUIDANCE}`
   );
+}
+
+/** Seconds of audio in a headerless file: pcm is two bytes per sample at its rate, mulaw and alaw one byte at 8000 Hz. */
+function rawSeconds(bytes: number, format: RawFormat, sampleRate: SampleRate | undefined): number {
+  return format === "pcm" ? bytes / (2 * (sampleRate ?? 24000)) : bytes / 8000;
+}
+
+/** "mp3", "wav at 48000 Hz", or "pcm (16-bit little-endian mono at 16000 Hz, no header)". */
+function formatLabel(format: AudioFormat, sampleRate: SampleRate | undefined): string {
+  if (format === "pcm") return `pcm (16-bit little-endian mono at ${sampleRate ?? 24000} Hz, no header)`;
+  if (format === "mulaw" || format === "alaw") return `${format} (G.711 at 8000 Hz, no header)`;
+  return format === "wav" && sampleRate !== undefined ? `wav at ${sampleRate} Hz` : format;
 }
 
 function timestampName(voice: string, format: string): string {
@@ -350,13 +403,14 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
     },
     {
       instructions:
-        "Paxa Labs API server (Thai, English, and Mandarin Chinese speech AI). speak plays a short line out loud on " +
+        "Paxa Labs API server: speech in Thai, English, and Mandarin Chinese, plus transcription, translation, and " +
+        "document reading across languages. speak plays a short line out loud on " +
         "this machine; queue_speech reads long content aloud continuously; control_playback inspects and " +
         "controls the shared audio queue; text_to_speech writes an audio file without playing it; " +
         "design_voice makes a new voice from a description, refine_voice changes it in words, save_voice keeps it, " +
         "and rename_voice and delete_voice manage saved ones; " +
-        "play_audio replays a local audio file; translate_to_thai translates any language into " +
-        "Thai; ocr_document runs OCR on a local PDF or image; extract_fields fills a schema of typed " +
+        "play_audio replays a local audio file; translate translates text between 15 languages; " +
+        "ocr_document runs OCR on a local PDF or image; extract_fields fills a schema of typed " +
         "fields from a local document; transcribe_audio turns a local recording into text and " +
         "subtitles; listen records one spoken turn from the microphone and returns its transcript. " +
         "Paid tools spend account credits " +
@@ -383,12 +437,14 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         voice: z.string().optional().describe(voiceHint(config)),
         language: z.enum(["auto", "th", "en", "zh"]).optional().describe(TTS_LANGUAGE_HINT),
         speed: z.number().min(0.5).max(1.5).optional().describe(SPEED_HINT),
+        temperature: z.number().min(0).max(2).optional().describe(TEMPERATURE_HINT),
         model: z.enum(TTS_MODELS).optional().describe(MODEL_HINT),
       },
     },
-    async ({ text: input, voice, language, speed, model }) => {
+    async ({ text: input, voice, language, speed, temperature, model }) => {
       try {
-        const [segment] = engine.enqueueTts([input], voice ?? config.defaultVoice, true, speechOptions(config, language, speed, model));
+        const options = speechOptions(config, { language, speed, temperature, model });
+        const [segment] = engine.enqueueTts([input], voice ?? config.defaultVoice, true, options);
         const settled = await engine.waitFor(segment as NonNullable<typeof segment>);
         switch (settled.status) {
           case "done":
@@ -417,23 +473,26 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
       annotations: { title: "Queue long-form speech", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
       description:
         "Read long content aloud (stories, articles, books). Splits the text into segments, " +
-        "synthesizes ahead while playing, and returns immediately; segments play in order " +
-        "after anything already queued. Monitor and control with the control_playback tool. " +
+        "synthesizes ahead while playing, and returns at once with the segment count and the estimated credits; " +
+        "segments play in order after anything already queued. There is no handle: control_playback monitors and " +
+        "controls the whole queue. Use speak instead for one short line that should play now and wait, and " +
+        "text_to_speech for a file without playback. " +
         `${TTS_PRICE_NOTE} ${EMOTION_TAG_HINT}`,
       inputSchema: {
         text: z.string().min(1).max(200_000).describe("Text to read aloud, Thai, English, or Mandarin Chinese"),
         voice: z.string().optional().describe(voiceHint(config)),
         language: z.enum(["auto", "th", "en", "zh"]).optional().describe(TTS_LANGUAGE_HINT),
         speed: z.number().min(0.5).max(1.5).optional().describe(SPEED_HINT),
+        temperature: z.number().min(0).max(2).optional().describe(TEMPERATURE_HINT),
         model: z.enum(TTS_MODELS).optional().describe(MODEL_HINT),
       },
     },
-    async ({ text: input, voice, language, speed, model }) => {
+    async ({ text: input, voice, language, speed, temperature, model }) => {
       try {
         const chunks = chunkText(input);
         if (chunks.length === 0) return failure("The text contains nothing to read.");
         const chosenVoice = voice ?? config.defaultVoice;
-        const segments = engine.enqueueTts(chunks, chosenVoice, false, speechOptions(config, language, speed, model));
+        const segments = engine.enqueueTts(chunks, chosenVoice, false, speechOptions(config, { language, speed, temperature, model }));
         const chars = chunks.reduce((sum, c) => sum + c.length, 0);
         const credits = (chars * ttsRate(chosenVoice, false)) / 1000;
         return text(
@@ -453,10 +512,12 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
       title: "Playback control",
       annotations: { title: "Playback control", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       description:
-        "Inspect and control the shared audio queue. status reports what is playing, what is " +
-        "queued, and any synthesis failures. pause and resume halt and continue playback " +
-        "(not supported on Windows). skip drops the current segment. clear stops playback " +
-        "and empties the queue.",
+        "Inspect and control the shared audio queue that speak, queue_speech, play_audio, and the voice design " +
+        "tools play through. status reports what is playing, what is queued, and any synthesis failures. pause " +
+        "holds playback until resume or clear, and audio queued meanwhile waits; pause is not supported on " +
+        "Windows, where skip or clear stops playback instead. skip drops the current segment and is refused when " +
+        "nothing is playing. clear stops playback and discards every queued segment, which must be queued again " +
+        "to be heard; audio files already written stay on disk. Free (no API call).",
       inputSchema: {
         action: z.enum(["status", "pause", "resume", "skip", "clear"]),
       },
@@ -499,9 +560,17 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
       annotations: { title: "Play an audio file", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       description:
         "Play a local audio file through this machine's speakers, for example a file produced " +
-        "earlier by text_to_speech. Blocks until playback finishes. Free (no API call).",
+        "earlier by text_to_speech. Waits for the audio playing now, plays ahead of queued long-form speech, and " +
+        "blocks until the file ends; control_playback skip or clear stops it early. Fails without playing when " +
+        "the file is missing, is not a playable format, or no audio player is installed; raw pcm, mulaw, and alaw " +
+        "files have no header and cannot be played. To say new text, use speak instead. Free (no API call).",
       inputSchema: {
-        file_path: z.string().describe("Path to a local audio file (mp3, wav, opus, ogg, flac, m4a, aac)"),
+        file_path: z
+          .string()
+          .describe(
+            "Path to a local audio file (mp3, wav, opus, ogg, flac, m4a, aac, aiff, caf), absolute or relative to the " +
+              "server's working directory",
+          ),
       },
     },
     async ({ file_path }) => {
@@ -536,11 +605,15 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
       annotations: { title: "Text to speech (file only)", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       description:
         "Synthesize speech with Paxa TTS and save it as an audio file without playing it: voiceovers, " +
-        `narration, audiobooks. Text beyond ${TTS_MAX_CHARS} characters is split at paragraphs and sentences and ` +
-        "the parts are joined into one file (needs ffmpeg). With subtitles set, an srt or vtt caption file that " +
-        `matches the voice word for word is written next to the audio. Costs ${TTS_CREDITS_PER_1K} credits per ` +
+        "narration, audiobooks, phone prompts. To hear speech instead, use speak (a short line) or queue_speech " +
+        "(long reads); play_audio plays a saved file later. The file goes to output_path, replacing a file " +
+        `already there, or to a new timestamped name in PAXA_OUTPUT_DIR. Text beyond ${TTS_MAX_CHARS} characters ` +
+        "is split at paragraphs and " +
+        "sentences and the parts are joined into one file (mp3, opus, and wav need ffmpeg for that). With subtitles " +
+        "set, an srt or vtt caption file that matches the voice word for word is written next to the audio. " +
+        `Costs ${TTS_CREDITS_PER_1K} credits per ` +
         `1000 characters, ${TTS_TIMED_RATE} with subtitles, ${TTS_DESIGNED_RATE} in a designed voice (voice_...), ` +
-        `${TTS_DESIGNED_TIMED_RATE} with both. ${EMOTION_TAG_HINT}`,
+        `${TTS_DESIGNED_TIMED_RATE} with both; every format and sample rate costs the same. ${EMOTION_TAG_HINT}`,
       inputSchema: {
         text: z
           .string()
@@ -550,8 +623,23 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         voice: z.string().optional().describe(voiceHint(config)),
         language: z.enum(["auto", "th", "en", "zh"]).optional().describe(TTS_LANGUAGE_HINT),
         speed: z.number().min(0.5).max(1.5).optional().describe(SPEED_HINT),
+        temperature: z.number().min(0).max(2).optional().describe(TEMPERATURE_HINT),
         model: z.enum(TTS_MODELS).optional().describe(MODEL_HINT),
-        format: z.enum(["mp3", "opus", "wav"]).optional().describe('Audio format (default "mp3")'),
+        format: z
+          .enum(AUDIO_FORMATS)
+          .optional()
+          .describe(
+            'Audio format (default "mp3"). opus is the smallest, wav is uncompressed 16-bit with a header, pcm is the same ' +
+              "samples raw (little-endian mono, no header) for voice agents and audio pipelines, and mulaw and alaw are " +
+              "G.711 at 8000 Hz with no header, for phone lines (paxa-tts-flash-v2 only).",
+          ),
+        sample_rate: z
+          .literal(SAMPLE_RATES)
+          .optional()
+          .describe(
+            `Sample rate of pcm or wav in Hz (default 24000): ${SAMPLE_RATES.join(", ")} on paxa-tts-flash-v2; ` +
+              "paxa-tts-flash-v1 serves 24000 only. Other formats have a fixed rate (8000 for mulaw and alaw).",
+          ),
         output_path: z
           .string()
           .optional()
@@ -569,21 +657,22 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
           .min(10)
           .max(120)
           .optional()
-          .describe("Characters per caption line, 10 to 120 (default 60). Thai marks above and below consonants are not counted."),
+          .describe(SUBTITLE_COLUMNS_HINT),
       },
     },
-    async ({ text: input, voice, language, speed, model, format, output_path, subtitles, subtitle_line_chars }) => {
+    async ({ text: input, voice, language, speed, temperature, model, format, sample_rate, output_path, subtitles, subtitle_line_chars }) => {
       let workDir: string | null = null;
       try {
         const chosenVoice = voice ?? config.defaultVoice;
         const chosenFormat: AudioFormat = format ?? "mp3";
-        const options = speechOptions(config, language, speed, model);
+        const options = speechOptions(config, { language, speed, temperature, model });
         const chunks = input.length <= TTS_MAX_CHARS ? [input] : chunkText(input);
         if (chunks.length === 0) return failure("The text contains nothing to synthesize.");
-        if (chunks.length > 1 && !(hasFfmpeg() && hasFfprobe())) {
+        if (chunks.length > 1 && !isRawFormat(chosenFormat) && !(hasFfmpeg() && hasFfprobe())) {
           return failure(
             `The text is ${input.length} characters, over the ${TTS_MAX_CHARS} the API takes in one request, and joining ` +
-              `the parts needs ffmpeg, which is not installed. ${FFMPEG_INSTALL_HINT} Or send up to ${TTS_MAX_CHARS} characters per call.`,
+              `${chosenFormat} parts needs ffmpeg, which is not installed. ${FFMPEG_INSTALL_HINT} Or send up to ` +
+              `${TTS_MAX_CHARS} characters per call.`,
           );
         }
 
@@ -594,42 +683,46 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
           : join(config.outputDir, timestampName(chosenVoice, chosenFormat));
         await mkdir(dirname(target), { recursive: true });
 
+        const request = (part: string): TtsRequest => ({
+          text: part,
+          voice: chosenVoice,
+          format: chosenFormat,
+          ...(sample_rate !== undefined ? { sample_rate } : {}),
+          ...options,
+        });
+        const synthesize = async (part: string): Promise<{ audio: Buffer; spans: WordSpan[] }> =>
+          subtitles ? client.ttsTimed(request(part)) : { audio: await client.tts(request(part)), spans: [] };
+
         const spans: WordSpan[] = [];
-        let audio: Buffer;
         if (chunks.length === 1) {
-          const only = chunks[0] as string;
-          if (subtitles) {
-            const timed = await client.ttsTimed({ text: only, voice: chosenVoice, format: chosenFormat, ...options });
-            audio = timed.audio;
-            spans.push(...timed.spans);
-          } else {
-            audio = await client.tts({ text: only, voice: chosenVoice, format: chosenFormat, ...options });
-          }
-          await writeFile(target, audio);
+          const result = await synthesize(chunks[0] as string);
+          spans.push(...result.spans);
+          await writeFile(target, result.audio);
         } else {
-          // Synthesize the parts one at a time (one request in flight keeps low-concurrency plans safe), then join.
-          workDir = await mkdtemp(join(tmpdir(), "paxa-tts-"));
+          // Synthesize the parts one at a time (one request in flight keeps low-concurrency plans safe), each saved
+          // as it arrives, then join them: raw samples by appending, containers with ffmpeg.
+          const dir = await mkdtemp(join(tmpdir(), "paxa-tts-"));
+          workDir = dir;
           const parts: string[] = [];
           let offset = 0;
           for (let i = 0; i < chunks.length; i++) {
-            const part = join(workDir, `part-${String(i + 1).padStart(3, "0")}.${chosenFormat}`);
-            if (subtitles) {
-              const timed = await client.ttsTimed({ text: chunks[i] as string, voice: chosenVoice, format: chosenFormat, ...options });
-              await writeFile(part, timed.audio);
-              for (const span of timed.spans) spans.push({ text: span.text, start: span.start + offset, end: span.end + offset });
-            } else {
-              await writeFile(part, await client.tts({ text: chunks[i] as string, voice: chosenVoice, format: chosenFormat, ...options }));
-            }
-            if (subtitles) offset += probeDuration(part);
+            const result = await synthesize(chunks[i] as string);
+            const part = join(dir, `part-${String(i + 1).padStart(3, "0")}.${chosenFormat}`);
+            await writeFile(part, result.audio);
             parts.push(part);
+            for (const span of result.spans) spans.push({ text: span.text, start: span.start + offset, end: span.end + offset });
+            if (subtitles) {
+              offset += isRawFormat(chosenFormat) ? rawSeconds(result.audio.length, chosenFormat, sample_rate) : probeDuration(part);
+            }
           }
-          await concatAudio(parts, target, chosenFormat, join(workDir, "parts.txt"));
-          audio = await readFile(target);
+          if (isRawFormat(chosenFormat)) await concatRaw(parts, target);
+          else await concatAudio(parts, target, chosenFormat, join(dir, "parts.txt"));
         }
+        const bytes = (await stat(target)).size;
 
         const credits = estimateTtsCredits(input.length, ttsRate(chosenVoice, Boolean(subtitles)));
         const lines = [
-          `Saved ${(audio.length / 1024).toFixed(1)} KiB of ${chosenFormat} audio to ${target} ` +
+          `Saved ${(bytes / 1024).toFixed(1)} KiB of ${formatLabel(chosenFormat, sample_rate)} audio to ${target} ` +
             `(voice "${chosenVoice}", model ${options.model}, ${input.length} characters` +
             (chunks.length > 1 ? `, ${chunks.length} parts joined` : "") +
             `, about ${credits.toFixed(1)} credits).`,
@@ -732,7 +825,8 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         "Change a draft voice in words and play its new line. The instruction says what to change, such as \"a little " +
         'lower and slower" or "warmer, and older"; the rest of the voice stays, so change one quality at a time. Each ' +
         "call returns a new draft handle and the earlier handles keep their versions, so the user can go back to one. " +
-        "save_voice keeps the draft the user picks. " +
+        "save_voice keeps the draft the user picks. Refining never changes a voice already saved: saving a refined " +
+        "draft makes another voice, and rename_voice changes only a name. " +
         `Costs ${DESIGN_CREDITS} credits per call, the line included; a retry refines again and is charged again.`,
       inputSchema: {
         draft: z.string().min(1).max(4096).describe(DRAFT_HINT),
@@ -796,8 +890,10 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
       title: "Rename a designed voice",
       annotations: { title: "Rename a designed voice", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       description:
-        "Rename one of the account's designed voices. The id and the sound stay the same, so anything that uses the " +
-        "id keeps working. A catalog voice's name is refused. Free.",
+        "Rename one of the account's designed voices, given its voice_ id from list_voices or save_voice. The id " +
+        "and the sound stay the same, so anything that uses the id keeps working. The new name takes 1 to 60 " +
+        "characters, and a catalog voice's name is refused. To change how a voice sounds, refine a draft and save " +
+        "it as a new voice; to remove one, use delete_voice. Free.",
       inputSchema: {
         id: z.string().min(1).describe("The designed voice's id (voice_...), from list_voices or save_voice"),
         name: z.string().min(1).max(60).describe("The new name, up to 60 characters"),
@@ -820,9 +916,11 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
       title: "Delete a designed voice",
       annotations: { title: "Delete a designed voice", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
       description:
-        "Delete one of the account's designed voices and free its slot. Cannot be undone: every later request in the " +
-        "voice fails, and designing again does not bring the same sound back. Use it only when the user asks to " +
-        "delete that voice. Free.",
+        "Delete one of the account's designed voices and free its slot. The id is the voice_ id list_voices shows; " +
+        "it is looked up first, so an id the account does not have is answered without deleting anything, and " +
+        "catalog voices cannot be deleted. Cannot be undone: every later request in the voice fails, and designing " +
+        "again does not bring the same sound back. Use it only when the user asks to delete that voice; to change " +
+        "only its name, use rename_voice. Free.",
       inputSchema: {
         id: z.string().min(1).describe("The designed voice's id (voice_...), from list_voices or save_voice"),
       },
@@ -851,46 +949,102 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
   );
 
   server.registerTool(
-    "translate_to_thai",
+    "translate",
     {
-      title: "Translate to Thai",
-      annotations: { title: "Translate to Thai", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      title: "Translate text",
+      annotations: { title: "Translate text", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       description:
-        "Translate text from any language into Thai with Paxa Translate. Accepts a single " +
-        "string or up to 200 segments that share context. Costs 25 credits per 1000 text " +
-        "characters (minimum 2 credits); context and glossary characters bill at 8 per 1000.",
+        "Translate text into any of 15 languages, from any of them, with Paxa Translate: " +
+        `${TRANSLATE_LANGUAGE_LIST}. The source language is detected per segment, so mixed-language text works; ` +
+        "a segment already in the target language comes back unchanged. Accepts one string or up to 200 segments " +
+        "that share context, and returns each translation (numbered for segments) with its detected source " +
+        "language, any review flag, and the credits used. For text " +
+        "in a PDF or image, run ocr_document first. Costs 25 credits per 1000 text characters per rendering " +
+        "(minimum 2 credits), so 1000 characters cost 25 credits, or 50 with alternatives 2; instructions, " +
+        "context, examples, do_not_translate strings, and glossary terms bill at 8 per 1000.",
       inputSchema: {
         text: z
           .union([z.string().min(1).max(20_000), z.array(z.string().min(1)).min(1).max(200)])
           .describe("Text to translate: one string, or an array of segments translated together"),
-        formality: z.enum(["auto", "formal", "casual"]).optional(),
+        target: z
+          .enum(TRANSLATE_LANGUAGES)
+          .describe('The language to write, as its code (see the description). Chinese ("zh") is written in Simplified characters.'),
+        source: z
+          .enum([...TRANSLATE_LANGUAGES, "auto"])
+          .optional()
+          .describe('Pin the source language only when detection gets it wrong (default "auto", detected per segment). Must differ from target.'),
+        formality: z
+          .enum(["auto", "formal", "casual"])
+          .optional()
+          .describe(
+            '"auto" (default) matches the tone of the source; "formal" writes the target language\'s polite written ' +
+              'register (polite particles in Thai, the polite form of address where a language has one); "casual" ' +
+              "writes conversational language between peers.",
+          ),
         borrowed_words: z
           .enum(["auto", "transliterate", "preserve"])
           .optional()
-          .describe("How to render foreign loanwords: transliterate into Thai script, or preserve as-is"),
-        format: z.enum(["text", "markdown", "html"]).optional().describe("Treat input as plain text, Markdown, or HTML"),
-        instructions: z.string().max(4000).optional().describe("Free-form guidance for the translator"),
+          .describe(
+            'How to render borrowed words: "auto" (default) uses the established form in the target language, ' +
+              '"transliterate" writes them in the target script, "preserve" keeps technical terms and proper nouns in their original script',
+          ),
+        format: z
+          .enum(["text", "markdown", "html"])
+          .optional()
+          .describe("Treat input as plain text, Markdown, or HTML; only the prose of Markdown and HTML is translated, links, code, and tags come back untouched"),
+        alternatives: z
+          .number()
+          .int()
+          .min(1)
+          .max(5)
+          .optional()
+          .describe("Renderings per segment, best first (default 1). Each one bills the text again and counts against the 20,000-character text limit."),
+        instructions: z
+          .string()
+          .max(4000)
+          .optional()
+          .describe("Free-form direction for the translator: tone, audience, house rules, terminology. Style only."),
         context: z
           .string()
           .max(100_000)
           .optional()
-          .describe("Background material that improves accuracy, billed at the lower reference rate"),
-        do_not_translate: z.array(z.string()).max(100).optional().describe("Strings preserved verbatim"),
+          .describe("Background that conditions the translation without being translated: the surrounding document, the domain, the audience"),
+        examples: z
+          .array(z.object({ source: z.string().min(1).max(2000), target: z.string().min(1).max(2000) }))
+          .max(100)
+          .optional()
+          .describe("Style examples: source sentences with their preferred translations, whose tone and phrasing the translation follows. Up to 100 pairs."),
+        do_not_translate: z.array(z.string()).max(100).optional().describe("Strings that must appear in the translation exactly as written"),
         glossary: z
-          .array(z.object({ source: z.string(), target: z.string() }))
+          .array(
+            z.object({
+              source: z.string().min(1).max(200),
+              target: z.string().min(1).max(200),
+              always: z
+                .boolean()
+                .optional()
+                .describe("Send the term even when its source does not appear in the text, such as an abbreviation the text spells out"),
+            }),
+          )
           .max(5000)
           .optional()
-          .describe("Term pairs applied contextually"),
+          .describe(
+            "Term pairs the translation must use, applied in context (inflected and placed grammatically). Send the whole " +
+              "glossary: terms whose source does not appear in the text are dropped before the request runs and never billed.",
+          ),
       },
     },
     async ({ text: input, ...options }) => {
       try {
-        const request: TranslateRequest = { text: input };
+        const request: TranslateRequest = { text: input, target: options.target };
+        if (options.source) request.source = options.source;
         if (options.formality) request.formality = options.formality;
         if (options.borrowed_words) request.borrowed_words = options.borrowed_words;
         if (options.format) request.format = options.format;
+        if (options.alternatives) request.alternatives = options.alternatives;
         if (options.instructions) request.instructions = options.instructions;
         if (options.context) request.context = options.context;
+        if (options.examples) request.examples = options.examples;
         if (options.do_not_translate) request.do_not_translate = options.do_not_translate;
         if (options.glossary) request.glossary = options.glossary;
 
@@ -898,10 +1052,17 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         const lines = response.translations.map((t, i) => {
           const head = response.translations.length > 1 ? `[${i + 1}] ` : "";
           const source = t.detected_source ? ` (detected source: ${t.detected_source})` : "";
+          const others = (t.alternatives ?? []).map((alt, k) => `\n${head}alternative ${k + 2}: ${alt}`).join("");
           const review = t.review ? `\n${head}review flag: ${t.review.reason}${t.review.detail ? `, ${t.review.detail}` : ""}` : "";
-          return `${head}${t.text}${source}${review}`;
+          return `${head}${t.text}${source}${others}${review}`;
         });
-        lines.push(`\nUsed ${response.usage.credits} credits (${response.usage.billable_chars} billable characters).`);
+        const usage = response.usage;
+        lines.push(
+          `\nUsed ${usage.credits} credits (${usage.billable_chars} billable characters)` +
+            (usage.glossary_terms_available
+              ? `; ${usage.glossary_terms_sent ?? 0} of ${usage.glossary_terms_available} glossary terms matched the text and were sent.`
+              : "."),
+        );
         if (response.requestId) lines.push(`Request id: ${response.requestId}`);
         return text(lines.join("\n"));
       } catch (err) {
@@ -917,8 +1078,11 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
       annotations: { title: "OCR a document", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       description:
         "Run Paxa OCR on a local PDF, PNG, JPEG, or WebP file and return its content as " +
-        "GitHub-flavored Markdown (or structured blocks). Up to 50 pages and 10 MiB per file. " +
-        "Costs 6.5 credits per page.",
+        "GitHub-flavored Markdown (or structured blocks). Reads Thai, English, Simplified Chinese, and other " +
+        "languages as printed, pages that mix them included, with no language setting; text set in two columns " +
+        "reads column by column. output \"structured\" returns typed blocks as JSON instead of Markdown. Use " +
+        "extract_fields instead for specific values (a total, a date, an ID number) checked and typed against a " +
+        "schema. Up to 50 pages and 10 MiB per file. Costs 6.5 credits per page.",
       inputSchema: {
         file_path: z.string().describe("Path to a local PDF, PNG, JPEG, or WebP file"),
         output: z
@@ -970,7 +1134,9 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         "Extract typed fields from a local PDF, PNG, JPEG, or WebP document (up to 20 pages and 10 MiB) with " +
         "Paxa Document Extraction. You write a schema of fields; every value returned is text printed in the " +
         "document, read as the field's type, or null with the reason. Nothing is inferred or looked up. Built " +
-        "for Thai documents (receipts, tax invoices, forms, IDs) and fine on English ones. Costs 13 credits per " +
+        "for Thai documents (receipts, tax invoices, forms, IDs) and fine on English ones. Use ocr_document " +
+        "instead for a document's full text. Returns a status line, the fields as JSON (null where a value is not " +
+        "printed), then the missing, unverified, truncated, and assumed fields. Costs 13 credits per " +
         "page for a schema of up to 50 leaf fields and 19.5 per page for 51 to 100; the page reading and the " +
         "evidence spans cost nothing extra. A schema the API refuses costs nothing and names the field and reason. " +
         "The schema parameter summarizes the dialect; https://paxalabs.com/docs/extraction has every type and key.",
@@ -1080,12 +1246,14 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
       title: "Transcribe a recording",
       annotations: { title: "Transcribe a recording", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
       description:
-        "Transcribe a local recording or video of speech, Thai or any other language, code-switching included (mp3, wav, flac, ogg, m4a, aac, " +
+        "Transcribe a local recording or video of speech in Thai, English, Mandarin Chinese, or another language, " +
+        "code-switching included (mp3, wav, flac, ogg, m4a, aac, " +
         "webm; or mp4, mov, mkv, avi and other video files, whose sound track is extracted locally with ffmpeg; " +
         "up to 60 minutes and 25 MiB) with Paxa STT. The transcript comes back inline, so nothing needs " +
         "to be read from disk afterwards; optionally it is also saved as txt, json (with word timings " +
         "and segments), srt, or vtt, named after the recording. Existing files are never overwritten. " +
-        "Detects the language, handles code-switching, and can label speakers. Terms configured in " +
+        "Detects the language and can label speakers; nothing is translated. For one live answer from the " +
+        "microphone, use listen instead. Terms configured in " +
         "PAXA_VOCABULARY or PAXA_VOCABULARY_FILE are pinned on every call. Costs " +
         `${STT_CREDITS_PER_MINUTE} credits per minute of audio (0.1 minimum); subtitles and word timings ` +
         "cost nothing extra. Long recordings take minutes to process.",
@@ -1104,7 +1272,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
           .string()
           .max(16)
           .optional()
-          .describe('Language hint as a BCP 47 tag such as "th" or "en". Omit to auto-detect.'),
+          .describe(STT_LANGUAGE_HINT),
         diarization: z
           .boolean()
           .optional()
@@ -1116,14 +1284,14 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         convention: z
           .enum(["spoken", "written"])
           .optional()
-          .describe('"spoken" (default) writes numbers and dates as they were said; "written" uses numerals'),
+          .describe('"spoken" (default) writes numbers and dates as they were said; "written" uses numerals. Only Thai is respelled; other languages read the same under both.'),
         vocabulary: z
           .array(z.string().max(50))
           .max(50)
           .optional()
           .describe(
             "Keyword pinning: terms the recording likely contains, spelled the way they should appear in the " +
-              "transcript (product names, people, places, jargon; Thai or English). Up to 50 terms of 50 characters. " +
+              "transcript (product names, people, places, jargon; in any language). Up to 50 terms of 50 characters. " +
               "They bias recognition and are never inserted. Added to any terms configured in PAXA_VOCABULARY or PAXA_VOCABULARY_FILE.",
           ),
         timestamps: z
@@ -1136,7 +1304,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
           .min(10)
           .max(120)
           .optional()
-          .describe("Characters per subtitle line, 10 to 120 (default 60). Thai marks above and below consonants are not counted."),
+          .describe(SUBTITLE_COLUMNS_HINT),
         save: z
           .array(z.enum(["txt", "json", "srt", "vtt"]))
           .optional()
@@ -1270,11 +1438,12 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
       title: "Listen to the microphone",
       annotations: { title: "Listen to the microphone", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
       description:
-        "Record one spoken turn from this machine's microphone and return its transcript (Thai, English, or " +
-        "other languages, code-switching included). Paxa's realtime transcription detects when the user starts " +
+        "Record one spoken turn from this machine's microphone and return its transcript (Thai, English, Mandarin " +
+        "Chinese, or another language, code-switching included). Paxa's realtime transcription detects when the user starts " +
         "and stops talking, so the call returns as soon as the turn ends; the audio goes straight to the API " +
         "and nothing is written to disk. Waits for any speech this server is playing to finish first. Use it " +
-        "after speak when you asked the user a question and want their spoken answer. Returns an empty " +
+        "after speak when you asked the user a question and want their spoken answer; for a recording already on " +
+        "disk, use transcribe_audio instead. Returns an empty " +
         "transcript when nobody spoke within wait_seconds. Costs " +
         `${LISTEN_CREDITS_PER_MINUTE} credits per minute of audio sent, silence included (a few seconds of ` +
         "listening costs well under one credit). Needs a microphone recorder on this machine (ffmpeg or sox; " +
@@ -1284,7 +1453,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
           .string()
           .max(16)
           .optional()
-          .describe('Language hint as a BCP 47 tag such as "th" or "en". Omit to auto-detect.'),
+          .describe(STT_LANGUAGE_HINT),
         style: z
           .enum(["verbatim", "clean"])
           .optional()
@@ -1292,7 +1461,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         convention: z
           .enum(["spoken", "written"])
           .optional()
-          .describe('"spoken" (default) writes numbers as said; "written" uses numerals'),
+          .describe('"spoken" (default) writes numbers as said; "written" uses numerals. Only Thai is respelled.'),
         vocabulary: z
           .array(z.string().max(50))
           .max(50)
@@ -1370,7 +1539,8 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         "Report a wrong or poor output, an API problem, or a platform issue to the Paxa Labs team, tied to the " +
         "request ids the other tools print (\"Request id: ...\"). A rating alone on at least one request id is a " +
         "complete report. For a wrong output, add an example with the exact input, the output received, and the " +
-        "output expected. Free, no credits. Use it when the user says an output was wrong, or asks to report a " +
+        "output expected. Returns the report's id once it is filed. Free, no credits. Use it when the user says " +
+        "an output was wrong, or asks to report a " +
         "problem; do not file reports the user did not ask for.",
       inputSchema: {
         kind: z
@@ -1423,8 +1593,11 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
       title: "List voices",
       annotations: { title: "List voices", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       description:
-        "List the Paxa TTS voices: the account's designed voices with their slots, then the catalog roster with ids, " +
-        "names, gender, language, and character notes. Free.",
+        "List the Paxa TTS voices in one response (no paging): recommended voices first, the account's designed " +
+        "voices with their slots, then the catalog roster per model with ids, names, gender, language, and " +
+        "character notes. Call it when the user asks what voices exist or wants a different one, and before " +
+        "save_voice to see free slots; pass an id from it as voice to speak, queue_speech, or text_to_speech. The " +
+        "default voice needs no lookup. Free.",
       inputSchema: {},
     },
     async () => {
@@ -1492,7 +1665,11 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
     {
       title: "List models",
       annotations: { title: "List models", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-      description: "List available Paxa models with their limits and credit pricing. Free.",
+      description:
+        "List the available Paxa models (speech, transcription, realtime transcription, translation, OCR, and " +
+        "extraction) with their limits and credit pricing, and the languages translate writes. Call it to check " +
+        "a limit or a price before a large job; voices are in list_voices, and the credit balance in get_account. " +
+        "Free.",
       inputSchema: {},
     },
     async () => {
@@ -1516,13 +1693,18 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
           if (m.max_chars != null) facts.push(`up to ${m.max_chars} chars per request`);
           if (m.max_pages != null) facts.push(`up to ${m.max_pages} pages`);
           if (m.max_duration_seconds != null) facts.push(`up to ${Math.round(m.max_duration_seconds / 60)} minutes of audio`);
+          if (m.max_session_seconds != null) facts.push(`up to ${Math.round(m.max_session_seconds / 60)} minutes per realtime connection`);
+          if (m.encodings && m.encodings.length > 0) {
+            facts.push(`audio in: ${m.encodings.map((e) => `${e.encoding} at ${e.sample_rates.join(" or ")} Hz`).join(", ")}`);
+          }
           if (m.diarization_limit_seconds != null) {
             facts.push(`speaker labels for recordings under ${Math.round(m.diarization_limit_seconds / 60)} minutes`);
           }
           if (m.max_bytes != null) facts.push(`up to ${Math.round(m.max_bytes / 1024 / 1024)} MiB`);
           if (m.voices.length > 0) facts.push(`${m.voices.length} voices`);
           if (m.sources) facts.push(`sources: ${m.sources.join(", ")} or auto`);
-          if (m.target) facts.push(`target: ${m.target}`);
+          if (m.targets && m.targets.length > 0) facts.push(`targets: ${m.targets.join(", ")}` + (m.target ? ` (default ${m.target})` : ""));
+          else if (m.target) facts.push(`target: ${m.target}`);
           return `- ${m.id} (${m.name}): ${facts.join("; ")}`;
         });
         return text(lines.join("\n"));
@@ -1537,7 +1719,10 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
     {
       title: "Account and credits",
       annotations: { title: "Account and credits", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-      description: "Show the API key's account: credit balance, plan, and rate limits. Free.",
+      description:
+        "Show the API key's account, read from the API on each call: credit balance, spending cap, plan, and " +
+        "rate limits. Call it before a large paid job, or after a call fails for credits or a rate limit; prices " +
+        "per model are in list_models. Free.",
       inputSchema: {},
     },
     async () => {

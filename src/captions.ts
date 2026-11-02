@@ -3,6 +3,9 @@
 // inside a word. Thai is the point: it writes no spaces, its vowels and tone
 // marks take no width, and a caption cut by character count would split a
 // word. The word spans say where words end, so every break lands on one.
+// Widths are columns, as the transcription API counts them: a Chinese,
+// Japanese, or Korean character takes two, so a line of one figure fills
+// about the same box in every script.
 
 export interface WordSpan {
   text: string;
@@ -19,7 +22,7 @@ export interface Cue {
 }
 
 export interface CueOptions {
-  /** Characters per line, Thai marks above and below not counted. */
+  /** Columns per line (see visibleWidth). Left out, defaultLineChars picks it from the words. */
   lineChars: number;
   maxLines: number;
   /** A gap between words at least this long starts a new cue. */
@@ -32,21 +35,42 @@ export interface CueOptions {
 
 export const DEFAULT_CUE_OPTIONS: CueOptions = { lineChars: 60, maxLines: 2, pauseSeconds: 0.7, maxSeconds: 6, minSeconds: 1 };
 
-const THAI = /[\u0E00-\u0E7F]/;
-const THAI_MARKS = /[\u0E31\u0E34-\u0E3A\u0E47-\u0E4E]/g;
+/** A line budget for text that is mostly Chinese, Japanese, or Korean: 16 characters. */
+const CJK_LINE_CHARS = 32;
+
+const THAI_MARK = /[\u0E31\u0E34-\u0E3A\u0E47-\u0E4E]/;
+/** Characters that take two columns: CJK ideographs, kana, hangul, and full-width punctuation and forms. */
+const WIDE =
+  /[\u1100-\u115F\u2E80-\u303E\u3041-\u33FF\u3400-\u4DBF\u4E00-\u9FFF\uA960-\uA97F\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE4F\uFF01-\uFF60\uFFE0-\uFFE6\u{20000}-\u{3FFFD}]/u;
+/** Scripts written without spaces between words, and their full-width punctuation. */
+const UNSPACED = /[\u0E00-\u0E7F\u3000-\u303F\u3041-\u33FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF01-\uFF60\u{20000}-\u{3FFFD}]/u;
 const SENTENCE_END = /[.!?。！？]["')\]]?$/;
 
-/** Visible width: every character except the Thai marks that sit above or below a consonant. */
+/** Visible width in columns: Thai marks above and below a consonant take none, wide characters two, the rest one. */
 export function visibleWidth(text: string): number {
-  return text.replace(THAI_MARKS, "").length;
+  let width = 0;
+  for (const ch of text) width += THAI_MARK.test(ch) ? 0 : WIDE.test(ch) ? 2 : 1;
+  return width;
 }
 
-/** The source's own spacing when known; otherwise Thai words join without a space and anything else gets one. */
+/** 60 columns, or 32 when most of the letters are Chinese, Japanese, or Korean (the transcription API's rule). */
+export function defaultLineChars(text: string): number {
+  let letters = 0;
+  let wide = 0;
+  for (const ch of text) {
+    if (!/\p{L}/u.test(ch)) continue;
+    letters++;
+    if (WIDE.test(ch)) wide++;
+  }
+  return wide * 2 > letters ? CJK_LINE_CHARS : DEFAULT_CUE_OPTIONS.lineChars;
+}
+
+/** The source's own spacing when known; otherwise Thai or CJK words join without a space and anything else gets one. */
 function joiner(previous: string, next: WordSpan): string {
   if (next.spaceBefore !== undefined) return next.spaceBefore ? " " : "";
   const a = previous.at(-1) ?? "";
   const b = next.text[0] ?? "";
-  return THAI.test(a) && THAI.test(b) ? "" : " ";
+  return UNSPACED.test(a) && UNSPACED.test(b) ? "" : " ";
 }
 
 /**
@@ -104,6 +128,7 @@ function layout(words: WordSpan[], lineChars: number): string[] {
 
 export function buildCues(spans: WordSpan[], options: Partial<CueOptions> = {}): Cue[] {
   const o = { ...DEFAULT_CUE_OPTIONS, ...options };
+  if (options.lineChars === undefined) o.lineChars = defaultLineChars(spans.map((s) => s.text).join(""));
   const cues: Cue[] = [];
   let words: WordSpan[] = [];
 

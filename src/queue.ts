@@ -368,7 +368,10 @@ export class SpeechEngine {
 
     if (streamError !== undefined && !controller.signal.aborted) {
       const why = streamError instanceof Error ? streamError.message : String(streamError);
-      throw new Error(`The audio stream ended early: ${why}`);
+      throw new Error(
+        `The audio stream ended early (${why}). The API refunds a stream that fails partway, and does not charge one ` +
+          "it refuses partway (out of credits, or the key's spending cap), so check the balance if it repeats.",
+      );
     }
     if (segment.status === "playing" || segment.status === "synthesizing") {
       segment.status = result.stopped ? "skipped" : "done";

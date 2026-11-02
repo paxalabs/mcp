@@ -10,6 +10,10 @@ export const STT_MODEL = "paxa-stt-lite-v1-preview";
 export const STT_REALTIME_MODEL = "paxa-stt-lite-realtime-v1-preview";
 export const EXTRACT_MODEL = "paxa-doc-extract-v1";
 
+/** The languages Paxa Translate reads and writes, any into any other (checked live 2026-11-02). */
+export const TRANSLATE_LANGUAGES = ["th", "en", "zh", "ja", "ko", "ar", "fr", "de", "hi", "id", "ms", "pt", "ru", "es", "vi"] as const;
+export type TranslateLanguage = (typeof TRANSLATE_LANGUAGES)[number];
+
 export const TTS_MAX_CHARS = 5000;
 export const OCR_MAX_BYTES = 10 * 1024 * 1024;
 export const STT_MAX_BYTES = 25 * 1024 * 1024;
@@ -58,12 +62,22 @@ const HINTS: Record<string, string> = {
     "the model cannot do (an accent, singing, an untrained sound), a bracket without letters, or a weight that is not " +
     "a number; on v1 it is a word outside the emotion tag list. Remove or reword the tag. " +
     "Reference: https://paxalabs.com/docs/directions",
+  validation: "The request broke a rule (the field and reason above say which); nothing was charged. Fix it and retry.",
   text_too_long: "Split the text into shorter requests.",
   request_too_large:
-    "Shorten the text, context, instructions, or glossary; every field counts toward the request ceiling.",
+    "Shorten the text, context, instructions, examples, or glossary; every field counts toward the request ceiling, " +
+    "and each extra rendering (alternatives) counts the text again.",
+  unsupported_language:
+    "The translation model does not take that language code, or a pinned source equals the target. The codes are " +
+    `${TRANSLATE_LANGUAGES.join(", ")}; leave source out to detect it.`,
+  unsupported_format:
+    "The model does not serve that format at that sample rate. paxa-tts-flash-v2 serves pcm and wav at 8000 to 48000 Hz " +
+    "and mulaw and alaw at 8000; paxa-tts-flash-v1 serves pcm and wav at 24000 only, and no mulaw or alaw. mp3 and opus " +
+    "take only their own rate. Leave sample_rate out for the format's own rate.",
   unspeakable_text:
-    "The text contains no Thai or English words to voice (only emoji, punctuation, or an " +
-    "unsupported script); the charge was refunded. Retrying the same text fails again.",
+    "The text holds nothing to voice: only tags, emoji, punctuation, or a script the model does not speak. A text of " +
+    "tags alone is refused before the charge, any other is refunded. Write Thai, English, or Mandarin Chinese words; " +
+    "retrying the same text fails again.",
   content_blocked:
     "The safety system declined this content; the charge was refunded. Revise the input, " +
     "retrying the same content fails again. If the block looks wrong, contact support with the request id.",
@@ -104,8 +118,11 @@ export class PaxaApiError extends Error {
     readonly status: number,
     readonly requestId: string | undefined,
     detail?: string,
-    /** Where a refused extraction schema went wrong: the field path (empty for the root) and a stable reason code. */
-    readonly schemaProblem?: { path: string; reason: string },
+    /**
+     * Where a refused request went wrong: the field path in dot form (body.temperature, or a field of an extraction
+     * schema, empty for the schema's root) and a stable reason code. Validation errors and refused schemas carry it.
+     */
+    readonly problem?: { path: string; reason: string },
   ) {
     super(detail && detail.length > 0 ? detail : code);
   }
@@ -119,9 +136,11 @@ export class PaxaApiError extends Error {
     if (this.message !== this.code) out += `: ${this.message}`;
     if (this.requestId) out += ` [request id ${this.requestId}]`;
     out += ".";
-    if (this.schemaProblem) {
-      const where = this.schemaProblem.path ? `field "${this.schemaProblem.path}"` : "the schema root";
-      out += ` The problem is at ${where}: ${this.schemaProblem.reason}.`;
+    if (this.problem) {
+      const { path, reason } = this.problem;
+      if (path) out += ` The problem is at field "${path}": ${reason}.`;
+      else if (this.code === "schema_invalid") out += ` The problem is at the schema root: ${reason}.`;
+      else out += ` Reason: ${reason}.`;
     }
     const hint = hintFor(this.code, this.status);
     if (hint) out += ` ${hint}`;
@@ -130,7 +149,17 @@ export class PaxaApiError extends Error {
   }
 }
 
-export type AudioFormat = "mp3" | "opus" | "wav";
+export const AUDIO_FORMATS = ["mp3", "opus", "wav", "pcm", "mulaw", "alaw"] as const;
+export type AudioFormat = (typeof AUDIO_FORMATS)[number];
+export type RawFormat = "pcm" | "mulaw" | "alaw";
+
+/** Headerless sample formats: pcm is 16-bit little-endian mono, mulaw and alaw are G.711 at one byte per sample. */
+export function isRawFormat(format: AudioFormat): format is RawFormat {
+  return format === "pcm" || format === "mulaw" || format === "alaw";
+}
+/** The rates pcm and wav can be asked for; v1 serves 24000 only, mulaw and alaw are always 8000. */
+export const SAMPLE_RATES = [8000, 16000, 22050, 24000, 32000, 44100, 48000] as const;
+export type SampleRate = (typeof SAMPLE_RATES)[number];
 
 export type TtsLanguage = "auto" | "th" | "en" | "zh";
 
@@ -138,11 +167,15 @@ export interface TtsRequest {
   text: string;
   voice: string;
   format?: AudioFormat;
+  /** Sample rate of pcm and wav, in Hz. */
+  sample_rate?: SampleRate;
   model?: string;
   /** How codes, digits, and symbols are read. "auto" (the default) works it out from the text. */
   language?: TtsLanguage;
   /** Speaking rate, 0.5 to 1.5, as a multiplier on the voice's design speed. Pitch is preserved; the price is the same. */
   speed?: number;
+  /** How much a reading varies from one request to the next, 0 to 2 (default 0.5). v2 only; v1 refuses any other value. */
+  temperature?: number;
 }
 
 /** Per-request synthesis settings shared by the speech tools and the engine. */
@@ -150,6 +183,7 @@ export interface SpeechOptions {
   model?: TtsModel;
   language?: TtsLanguage;
   speed?: number;
+  temperature?: number;
 }
 
 export interface Voice {
@@ -248,31 +282,46 @@ export interface PaxaModel {
   max_pages: number | null;
   max_duration_seconds: number | null;
   diarization_limit_seconds: number | null;
+  /** Most audio one realtime connection accepts, in seconds. */
+  max_session_seconds?: number | null;
+  /** Audio a realtime connection's start frame may declare. */
+  encodings?: Array<{ encoding: string; sample_rates: number[] }> | null;
   max_bytes: number | null;
   formats: string[] | null;
   min_request_credits: number | null;
   voices: string[];
   sources: string[] | null;
+  /** The languages a translation model writes. */
+  targets?: string[] | null;
+  /** The language an omitted target reads as. */
   target: string | null;
 }
 
 export interface TranslateRequest {
   text: string | string[];
   model?: string;
-  source?: string;
+  /** Pinned source language; "auto" (the default) detects it per segment. */
+  source?: TranslateLanguage | "auto";
+  /** The language to write; the API reads an omitted target as Thai. */
+  target?: TranslateLanguage;
   formality?: "auto" | "formal" | "casual";
   borrowed_words?: "auto" | "transliterate" | "preserve";
   format?: "text" | "markdown" | "html";
+  /** Renderings per segment, 1 to 5; each bills the text again. */
+  alternatives?: number;
   instructions?: string;
   context?: string;
+  examples?: Array<{ source: string; target: string }>;
   do_not_translate?: string[];
-  glossary?: Array<{ source: string; target: string }>;
+  glossary?: Array<{ source: string; target: string; always?: boolean }>;
 }
 
 export interface TranslateResponse {
   translations: Array<{
     text: string;
     detected_source?: string;
+    /** Further renderings, best first, when alternatives was above 1. */
+    alternatives?: string[];
     review?: { reason: string; detail?: string } | null;
   }>;
   usage: {
@@ -280,6 +329,8 @@ export interface TranslateResponse {
     reference_chars: number;
     billable_chars: number;
     credits: number;
+    glossary_terms_sent?: number;
+    glossary_terms_available?: number;
   };
 }
 
@@ -372,7 +423,7 @@ export interface AccountInfo {
     last_used_at: string | null;
   };
   balance: { wallet: number; plan: number; total: number };
-  /** rpm null means no per-minute limit. concurrency is documented as an integer, but the free plan answers null. */
+  /** rpm null means no per-minute limit. concurrency is documented as an integer, but may be null. */
   plan: { key: string; rpm: number | null; concurrency: number | null; monthly_credits: number };
 }
 
@@ -437,7 +488,8 @@ export class PaxaClient {
         if (body?.title) code = body.title;
         detail = body?.detail;
         if (typeof body?.reason === "string") {
-          throw new PaxaApiError(code, res.status, requestId, detail, { path: body.path ?? "", reason: body.reason });
+          const path = typeof body.path === "string" ? body.path : "";
+          throw new PaxaApiError(code, res.status, requestId, detail, { path, reason: body.reason });
         }
       }
       throw new PaxaApiError(code, res.status, requestId, detail);
@@ -455,12 +507,6 @@ export class PaxaClient {
     return Buffer.from(await res.arrayBuffer());
   }
 
-  /**
-   * Streaming synthesis. Resolves as soon as the response headers arrive; mp3
-   * chunks then follow on the body while synthesis is still running. A failure
-   * after the first byte shows up as a body that ends early, not as an error
-   * response, and the API refunds it automatically.
-   */
   /** Synthesize with word timings. Bills 1.25 times the untimed request; the audio bytes are the same. */
   async ttsTimed(req: TtsRequest): Promise<{ audio: Buffer; spans: Array<{ text: string; start: number; end: number }> }> {
     const res = await this.request("/v1/tts", {
@@ -473,6 +519,13 @@ export class PaxaClient {
     return { audio: Buffer.from(body.audio, "base64"), spans: body.timing?.spans ?? [] };
   }
 
+  /**
+   * Streaming synthesis. Resolves as soon as the response headers arrive; mp3
+   * chunks then follow on the body while synthesis is still running. A failure
+   * after the first byte, or a refusal after it (out of credits, the key's cap),
+   * shows up as a body that ends early, not as an error response; the API
+   * refunds the first and does not charge the second.
+   */
   async ttsStream(req: TtsRequest, signal?: AbortSignal): Promise<ReadableStream<Uint8Array>> {
     const res = await this.request("/v1/tts", {
       method: "POST",

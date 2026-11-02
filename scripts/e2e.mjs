@@ -52,6 +52,27 @@ if (!/model paxa-tts-flash-v2/.test(tts.body)) console.log("WARNING: default mod
 // The legacy model on request, with a voice only it carries (about 0.2 credits)
 const v1 = await call("text_to_speech", { text: "Legacy model check.", voice: "donut", model: "paxa-tts-flash-v1" });
 if (!/model paxa-tts-flash-v1/.test(v1.body)) console.log("WARNING: explicit v1 model not honored");
+// v1 refuses a temperature: the validation error names the field
+const v1Temp = await call("text_to_speech", { text: "x", voice: "donut", model: "paxa-tts-flash-v1", temperature: 1 });
+if (!/body\.temperature/.test(v1Temp.body)) console.log("WARNING: the validation error did not name the field");
+// Raw pcm at 16 kHz with a pause tag and temperature 0 (about 0.5 credits)
+const pcm = await call("text_to_speech", { text: "Raw samples [pause 300ms] for a voice agent.", format: "pcm", sample_rate: 16000, temperature: 0 });
+if (!/pcm \(16-bit little-endian mono at 16000 Hz/.test(pcm.body)) console.log("WARNING: pcm output not reported");
+// Mandarin with captions: one span per character comes back, cues must fit 32 columns (about 0.5 credits)
+const zh = await call("text_to_speech", {
+  text: "你好，欢迎使用帕萨实验室的语音服务。今天天气很好，我们一起去公园散步吧。",
+  language: "zh",
+  subtitles: "srt",
+});
+const zhPath = zh.body.match(/to (\/\S+)/)?.[1];
+if (zhPath) {
+  const { readFileSync } = await import("node:fs");
+  const srt = readFileSync(zhPath.replace(/\.mp3$/, ".srt"), "utf8");
+  const { visibleWidth } = await import("../dist/captions.js");
+  const long = srt.split("\n").filter((l) => !/^\d+$|-->|^$/.test(l) && visibleWidth(l) > 32);
+  if (long.length > 0) console.log("WARNING: Chinese caption lines over 32 columns:", long);
+  if (/[\u4E00-\u9FFF] [\u4E00-\u9FFF]/.test(srt)) console.log("WARNING: spaces between Chinese characters in captions");
+} else console.log("WARNING: no Mandarin file reported");
 const savedPath = tts.body.match(/to (\/\S+)/)?.[1];
 
 // Round trip: transcribe the file just synthesized, with every output format (about 0.5 credits)
@@ -73,6 +94,11 @@ if (savedPath) {
       if (!/Pauses of 0\.5 s or more: \d+/.test(v.body)) console.log("WARNING: no pause list in the video transcription");
     } else console.log("WARNING: could not build the test video");
   } else console.log("(ffmpeg not installed: video transcription step skipped)");
+  // Mandarin transcription of the clip synthesized above (about 0.2 credits)
+  if (zhPath) {
+    const zhStt = await call("transcribe_audio", { file_path: zhPath, language: "zh", save: ["srt"] }, 300_000);
+    if (!/天气/.test(zhStt.body)) console.log("WARNING: the Mandarin transcript does not contain 天气");
+  }
   // Rate that transcription good through the feedback endpoint (free)
   const rid = stt.body.match(/Request id: (\S+?)\.?(\s|$)/)?.[1];
   if (rid) await call("send_feedback", { kind: "model", rating: "good", request_ids: [rid], message: "e2e: automated rating from the MCP server's end-to-end test" });
@@ -104,12 +130,23 @@ for (let i = 0; i < 40; i++) {
 // Replay the saved file through play_audio
 if (savedPath) await call("play_audio", { file_path: savedPath }, 120_000);
 
-// Translation
-await call("translate_to_thai", {
+// Translation: into Thai with a glossary, then Thai into Japanese with two renderings and a style example
+const toThai = await call("translate", {
   text: "Welcome to our store. Free shipping on orders over 500 baht.",
+  target: "th",
   formality: "formal",
-  glossary: [{ source: "free shipping", target: "ส่งฟรี" }],
+  glossary: [{ source: "free shipping", target: "ส่งฟรี" }, { source: "gift card", target: "บัตรของขวัญ" }],
 }, 300_000);
+if (!/1 of 2 glossary terms/.test(toThai.body)) console.log("WARNING: glossary usage not reported");
+const toJapanese = await call("translate", {
+  text: "ยินดีต้อนรับสู่ร้านของเรา",
+  target: "ja",
+  alternatives: 2,
+  examples: [{ source: "ขอบคุณที่ใช้บริการ", target: "ご利用いただきありがとうございます。" }],
+}, 300_000);
+if (!/alternative 2:/.test(toJapanese.body)) console.log("WARNING: no alternative rendering shown");
+const same = await call("translate", { text: "hello", target: "en", source: "en" });
+if (!/unsupported_language/.test(same.body)) console.log("WARNING: a source equal to the target was not refused");
 
 // OCR (set TEST_OCR_FILE to a local PDF or image; costs 6.5 credits per page)
 if (process.env.TEST_OCR_FILE) {

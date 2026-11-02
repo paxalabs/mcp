@@ -11,12 +11,13 @@
 
 Official [MCP](https://modelcontextprotocol.io) server for the
 [Paxa Labs API](https://paxalabs.com/docs): Thai, English, and Mandarin Chinese speech AI for
-your agent, including local audio playback.
+your agent, including local audio playback, plus transcription, translation,
+and document reading across languages.
 
 An agent connected to this server can speak out loud through your machine's
 speakers, read long content aloud as a managed playback queue, save speech to
 audio files, listen for a spoken reply, transcribe recordings with
-subtitles, translate any language into Thai, read PDFs and images with OCR,
+subtitles, translate between 15 languages, read PDFs and images with OCR,
 and extract typed fields from documents.
 
 > **Beta.** The tool set is complete and tested end to end, but tool names and
@@ -68,18 +69,18 @@ into `~/.cursor/mcp.json` or VS Code's MCP settings. Then replace
 | `queue_speech` | Read long content aloud: auto-chunks, synthesizes ahead while playing, returns immediately | 10 per 1000 chars (12.5 in a designed voice) |
 | `control_playback` | Control the shared audio queue: `status`, `pause`, `resume`, `skip`, `clear` | free |
 | `play_audio` | Play a local audio file through the speakers | free |
-| `text_to_speech` | Synthesize speech to an audio file (mp3, opus, wav) without playing it: long scripts are split and joined into one file, and `subtitles` writes a matching srt or vtt | 10 per 1000 chars (12.5 with subtitles or in a designed voice, 15 with both) |
+| `text_to_speech` | Synthesize speech to an audio file (mp3, opus, wav, raw pcm, or mulaw and alaw for phone lines, with `sample_rate` for pcm and wav) without playing it: long scripts are split and joined into one file, and `subtitles` writes a matching srt or vtt | 10 per 1000 chars (12.5 with subtitles or in a designed voice, 15 with both) |
 | `design_voice` | Make a new voice from a written description and play the line it speaks | 5 per call |
 | `refine_voice` | Change a draft voice in words, such as "a little lower and slower", and play its new line | 5 per call |
 | `save_voice` | Save a draft as one of your voices, with an id the speech tools accept | free |
 | `rename_voice` | Rename one of your designed voices; the id and sound stay | free |
 | `delete_voice` | Delete one of your designed voices and free its slot | free |
-| `translate_to_thai` | Translate any language into Thai, with formality, glossary, and context controls | 25 per 1000 chars |
-| `ocr_document` | OCR a local PDF, PNG, JPEG, or WebP into Markdown or structured blocks | 6.5 per page |
+| `translate` | Translate into any of 15 languages from any of them, with formality, glossary, style examples, alternative renderings, and context controls | 25 per 1000 chars per rendering |
+| `ocr_document` | OCR a local PDF, PNG, JPEG, or WebP (Thai, English, Simplified Chinese, and more, mixed pages too) into Markdown or structured blocks | 6.5 per page |
 | `extract_fields` | Fill a schema of typed fields (Thai IDs, dates, amounts, banks, line items) from a local PDF or image; every value is printed in the document or null with the reason | 13 per page (19.5 for schemas over 50 fields) |
 | `listen` | Record one spoken turn from the microphone and return its transcript; the API detects when the user stops talking | 12.5 per minute listened |
 | `send_feedback` | Rate an output or report a problem to the Paxa team, tied to the request ids the tools print | free |
-| `transcribe_audio` | Transcribe a local recording or video (Thai, English, mixed) to text, with optional speaker labels, word timings, srt or vtt subtitles, and a list of pauses to cut | 8.33 per minute |
+| `transcribe_audio` | Transcribe a local recording or video (Thai, English, Mandarin, other languages, mixed) to text, with optional speaker labels, word timings, srt or vtt subtitles, and a list of pauses to cut | 8.33 per minute |
 | `list_voices` | Your designed voices and slots, then the TTS voice roster with character notes | free |
 | `list_models` | Available models, limits, and pricing | free |
 | `get_account` | Credit balance, plan, and rate limits | free |
@@ -203,11 +204,16 @@ Speech runs on Paxa TTS Flash v2 by default: 50 voices that each speak
 Thai, English, and Mandarin Chinese, and every voice reads direction tags
 written into the text, such as `[whispering]`, `[laughs]`,
 `[speaking slowly, close to the microphone]`, a weighted blend like
-`[happy:0.7+sad:0.3]`, or `<emph>` and `<whisper>` marks. Nothing in
-brackets is spoken, tag characters bill as text, and a tag the model
-cannot do is refused before any charge. The
-[directions guide](https://paxalabs.com/docs/directions) lists every
-sound and rule.
+`[happy:0.7+sad:0.3]`, or `<emph>` and `<whisper>` marks. Pause tags add
+silence where they stand: `[short pause]`, `[pause]`, `[long pause]`, or an
+exact `[pause 300ms]` up to 500 ms. Nothing in brackets is spoken, tag
+characters bill as text, and a tag the model cannot do is refused before
+any charge. The [directions guide](https://paxalabs.com/docs/directions)
+lists every sound and rule.
+
+`temperature` (0 to 2, default 0.5) sets how much a reading varies from one
+request to the next. Use 0 when a line must match the takes around it, such
+as one sentence regenerated inside a finished voiceover.
 
 Pass `model: "paxa-tts-flash-v1"` on a call, or set `PAXA_TTS_MODEL`, only
 for v1's legacy features: four Thai voices with regional accents (Isan,
@@ -245,13 +251,28 @@ Three things creators asked for, each the local half of an API call:
   `subtitles: "srt"` (or `"vtt"`) writes a caption file next to the audio,
   timed from the synthesized words. Cues break at sentence punctuation, at
   pauses, and at the line budget, never inside a word, and Thai lines end
-  where the writer put a space. Timed synthesis bills 1.25x.
+  where the writer put a space. A Chinese character takes two columns of the
+  line budget, so Mandarin lines hold 16 characters by default. Timed
+  synthesis bills 1.25x.
 - **Long narration to one file.** Scripts past 5,000 characters are split
-  at paragraphs and sentences, synthesized part by part, and joined with
-  ffmpeg into a single mp3, opus, or wav, captions offset to match.
+  at paragraphs and sentences, synthesized part by part, and joined into a
+  single file, captions offset to match.
 
-ffmpeg is the one requirement for video input and for joining parts
-(`brew install ffmpeg` on macOS). Everything else works without it.
+ffmpeg is the one requirement for video input and for joining mp3, opus, or
+wav parts (`brew install ffmpeg` on macOS). Raw pcm, mulaw, and alaw parts
+join without it, and everything else works without it too.
+
+## Translation
+
+`translate` writes any of 15 languages from any other: Thai, English,
+Chinese (Simplified), Japanese, Korean, Arabic, French, German, Hindi,
+Indonesian, Malay, Portuguese, Russian, Spanish, and Vietnamese. `target` is
+required; the source is detected per segment, so mixed-language text works,
+and `source` pins it when detection is wrong. Formality, borrowed words,
+glossaries, and style `examples` follow the target, and `alternatives` (up
+to 5) returns extra renderings, each billed as another pass over the text.
+Send a whole glossary: terms that do not appear in the text are dropped
+before billing, and the result says how many were sent.
 
 ## Listening
 

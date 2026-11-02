@@ -17,7 +17,7 @@ const EXPECTED_TOOLS = [
   "save_voice",
   "rename_voice",
   "delete_voice",
-  "translate_to_thai",
+  "translate",
   "ocr_document",
   "extract_fields",
   "transcribe_audio",
