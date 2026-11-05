@@ -8,7 +8,7 @@
     "url": "https://github.com/paxalabs/mcp",
     "source": "github"
   },
-  "version": "0.1.0-beta.17",
+  "version": "0.1.0-beta.18",
   "icons": [
     {
       "src": "https://raw.githubusercontent.com/paxalabs/mcp/main/assets/icon.png",
@@ -21,7 +21,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@paxalabs/mcp",
-      "version": "0.1.0-beta.17",
+      "version": "0.1.0-beta.18",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
@@ -36,7 +36,7 @@
         },
         {
           "name": "PAXA_OUTPUT_DIR",
-          "description": "Directory where text_to_speech saves files (default: the working directory)",
+          "description": "Directory where text_to_speech and dialogue_to_speech save files (default: the working directory)",
           "isRequired": false,
           "isSecret": false,
           "format": "string"

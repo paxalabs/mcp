@@ -1,5 +1,6 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { openAsBlob } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 
@@ -18,9 +19,13 @@ import {
   type SttResponse,
   PaxaApiError,
   PaxaClient,
+  DIALOGUE_MAX_CHARS,
+  DIALOGUE_MAX_LINES,
   TRANSLATE_LANGUAGES,
-  TTS_MAX_CHARS,
+  TTS_MAX_STREAM_CHARS,
   type AudioFormat,
+  type DialogueLine,
+  type DialogueOutcome,
   isRawFormat,
   type RawFormat,
   type DesignedVoiceWords,
@@ -43,9 +48,20 @@ import {
   type Config,
   type TtsModel,
 } from "./config.js";
-import { buildCues, findPauses, markSpacing, toSrt, toVtt, type WordSpan } from "./captions.js";
+import { buildCues, defaultLineChars, findPauses, markSpacing, toSrt, toVtt, type Cue, type WordSpan } from "./captions.js";
 import { listenOnce, realtimeSupported } from "./listen.js";
-import { FFMPEG_INSTALL_HINT, concatAudio, concatRaw, extractAudio, hasFfmpeg, hasFfprobe, probeDuration } from "./media.js";
+import {
+  FFMPEG_INSTALL_HINT,
+  concatAudio,
+  concatRaw,
+  extractAudio,
+  fixWavSizes,
+  hasFfmpeg,
+  hasFfprobe,
+  joinedSeconds,
+  makeSilence,
+  rawSilence,
+} from "./media.js";
 import { SpeechEngine } from "./queue.js";
 import { findRecorder, noRecorderMessage } from "./recorder.js";
 
@@ -90,9 +106,13 @@ const PACKAGE_VERSION = (createRequire(import.meta.url)("../package.json") as { 
 const ICON_URL = "https://raw.githubusercontent.com/paxalabs/mcp/main/assets/icon.png";
 /** A short note to the agent about the newest tools, shown with the server instructions at connect time. */
 const WHATS_NEW =
-  `New in ${PACKAGE_VERSION}: translate replaces translate_to_thai and writes any of 15 languages (target), from any ` +
-  "of them; transcribe_audio and listen transcribe English and Mandarin as well as Thai; ocr_document reads " +
-  "Simplified Chinese pages; the speech tools take temperature and pause tags such as [pause] or [pause 300ms]; and " +
+  `New in ${PACKAGE_VERSION}: dialogue_to_speech writes a conversation to one audio file, each line in its own ` +
+  "voice, with the line timings and captions that never cross two lines; text_to_speech sends up to 20,000 " +
+  "characters per request, so long scripts join fewer parts; transcribe_audio takes recordings up to 120 minutes " +
+  "and 95 MiB, labels speakers across the whole length, and reads mu-law and A-law phone recordings. Since " +
+  "0.1.0-beta.17: translate replaces translate_to_thai and writes any of 15 languages (target), from any of them; " +
+  "transcribe_audio and listen transcribe English and Mandarin as well as Thai; ocr_document reads Simplified " +
+  "Chinese pages; the speech tools take temperature and pause tags such as [pause] or [pause 300ms]; and " +
   "text_to_speech also writes raw pcm, mulaw, and alaw, with sample_rate for pcm and wav. Since 0.1.0-beta.16: " +
   `design_voice makes a new voice from a written description (${DESIGN_CREDITS} credits), refine_voice changes it, ` +
   "and save_voice keeps it under an id (voice_...) that the speech tools accept. Since 0.1.0-beta.14 speech runs on " +
@@ -108,8 +128,12 @@ const OCR_EXTENSIONS = new Set([".pdf", ".png", ".jpg", ".jpeg", ".webp"]);
 const STT_EXTENSIONS = new Set([".mp3", ".wav", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".webm"]);
 /** Video containers whose sound track ffmpeg pulls out locally before transcription. */
 const VIDEO_EXTENSIONS = new Set([".mp4", ".m4v", ".mov", ".mkv", ".avi", ".mpg", ".mpeg", ".ts", ".3gp", ".wmv", ".flv"]);
-/** Above this, text_to_speech splits the text and joins the parts with ffmpeg. */
+/** The most text text_to_speech and dialogue_to_speech take in one call, split into requests and joined. */
 const TTS_LONG_TEXT_MAX = 200_000;
+/** dialogue_to_speech takes this many lines in one call, sent DIALOGUE_MAX_LINES at a time. */
+const DIALOGUE_SCRIPT_MAX_LINES = 2000;
+/** Line timings listed inline before the rest is summarized. */
+const LINE_TIMINGS_INLINE = 300;
 const STT_CREDITS_PER_MINUTE = 8.33;
 const LISTEN_CREDITS_PER_MINUTE = 12.5;
 /** Inline transcripts longer than this are cut, with a pointer to the saved file. An hour of speech is well under it. */
@@ -380,6 +404,26 @@ function formatLabel(format: AudioFormat, sampleRate: SampleRate | undefined): s
   return format === "wav" && sampleRate !== undefined ? `wav at ${sampleRate} Hz` : format;
 }
 
+const FORMAT_HINT =
+  'Audio format (default "mp3"). opus is the smallest, wav is uncompressed 16-bit with a header, pcm is the same ' +
+  "samples raw (little-endian mono, no header) for voice agents and audio pipelines, and mulaw and alaw are " +
+  "G.711 at 8000 Hz with no header, for phone lines (paxa-tts-flash-v2 only).";
+const SAMPLE_RATE_HINT =
+  `Sample rate of pcm or wav in Hz (default 24000): ${SAMPLE_RATES.join(", ")} on paxa-tts-flash-v2; ` +
+  "paxa-tts-flash-v1 serves 24000 only. Other formats have a fixed rate (8000 for mulaw and alaw).";
+const OUTPUT_PATH_HINT = "Where to save the file. Relative paths resolve against PAXA_OUTPUT_DIR (or the working directory).";
+
+/** output_path resolved against PAXA_OUTPUT_DIR, or a fresh name there. */
+function outputTarget(config: Config, outputPath: string | undefined, fallbackName: string): string {
+  if (!outputPath) return join(config.outputDir, fallbackName);
+  return isAbsolute(outputPath) ? outputPath : join(config.outputDir, outputPath);
+}
+
+/** The caption file next to an audio file: same name, .srt or .vtt. */
+function captionPathFor(audio: string, kind: "srt" | "vtt"): string {
+  return join(dirname(audio), basename(audio, extname(audio)) + `.${kind}`);
+}
+
 function timestampName(voice: string, format: string): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   return `paxa-tts-${stamp}-${voice}.${format}`;
@@ -407,6 +451,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         "document reading across languages. speak plays a short line out loud on " +
         "this machine; queue_speech reads long content aloud continuously; control_playback inspects and " +
         "controls the shared audio queue; text_to_speech writes an audio file without playing it; " +
+        "dialogue_to_speech writes a conversation in several voices to one file; " +
         "design_voice makes a new voice from a description, refine_voice changes it in words, save_voice keeps it, " +
         "and rename_voice and delete_voice manage saved ones; " +
         "play_audio replays a local audio file; translate translates text between 15 languages; " +
@@ -607,8 +652,8 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         "Synthesize speech with Paxa TTS and save it as an audio file without playing it: voiceovers, " +
         "narration, audiobooks, phone prompts. To hear speech instead, use speak (a short line) or queue_speech " +
         "(long reads); play_audio plays a saved file later. The file goes to output_path, replacing a file " +
-        `already there, or to a new timestamped name in PAXA_OUTPUT_DIR. Text beyond ${TTS_MAX_CHARS} characters ` +
-        "is split at paragraphs and " +
+        `already there, or to a new timestamped name in PAXA_OUTPUT_DIR. For several speakers in one file, use ` +
+        `dialogue_to_speech. Text beyond ${TTS_MAX_STREAM_CHARS} characters is split at paragraphs and ` +
         "sentences and the parts are joined into one file (mp3, opus, and wav need ffmpeg for that). With subtitles " +
         "set, an srt or vtt caption file that matches the voice word for word is written next to the audio. " +
         `Costs ${TTS_CREDITS_PER_1K} credits per ` +
@@ -625,25 +670,9 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         speed: z.number().min(0.5).max(1.5).optional().describe(SPEED_HINT),
         temperature: z.number().min(0).max(2).optional().describe(TEMPERATURE_HINT),
         model: z.enum(TTS_MODELS).optional().describe(MODEL_HINT),
-        format: z
-          .enum(AUDIO_FORMATS)
-          .optional()
-          .describe(
-            'Audio format (default "mp3"). opus is the smallest, wav is uncompressed 16-bit with a header, pcm is the same ' +
-              "samples raw (little-endian mono, no header) for voice agents and audio pipelines, and mulaw and alaw are " +
-              "G.711 at 8000 Hz with no header, for phone lines (paxa-tts-flash-v2 only).",
-          ),
-        sample_rate: z
-          .literal(SAMPLE_RATES)
-          .optional()
-          .describe(
-            `Sample rate of pcm or wav in Hz (default 24000): ${SAMPLE_RATES.join(", ")} on paxa-tts-flash-v2; ` +
-              "paxa-tts-flash-v1 serves 24000 only. Other formats have a fixed rate (8000 for mulaw and alaw).",
-          ),
-        output_path: z
-          .string()
-          .optional()
-          .describe("Where to save the file. Relative paths resolve against PAXA_OUTPUT_DIR (or the working directory)."),
+        format: z.enum(AUDIO_FORMATS).optional().describe(FORMAT_HINT),
+        sample_rate: z.literal(SAMPLE_RATES).optional().describe(SAMPLE_RATE_HINT),
+        output_path: z.string().optional().describe(OUTPUT_PATH_HINT),
         subtitles: z
           .enum(["srt", "vtt"])
           .optional()
@@ -666,21 +695,17 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         const chosenVoice = voice ?? config.defaultVoice;
         const chosenFormat: AudioFormat = format ?? "mp3";
         const options = speechOptions(config, { language, speed, temperature, model });
-        const chunks = input.length <= TTS_MAX_CHARS ? [input] : chunkText(input);
+        const chunks = input.length <= TTS_MAX_STREAM_CHARS ? [input] : chunkText(input, TTS_MAX_STREAM_CHARS);
         if (chunks.length === 0) return failure("The text contains nothing to synthesize.");
         if (chunks.length > 1 && !isRawFormat(chosenFormat) && !(hasFfmpeg() && hasFfprobe())) {
           return failure(
-            `The text is ${input.length} characters, over the ${TTS_MAX_CHARS} the API takes in one request, and joining ` +
-              `${chosenFormat} parts needs ffmpeg, which is not installed. ${FFMPEG_INSTALL_HINT} Or send up to ` +
-              `${TTS_MAX_CHARS} characters per call.`,
+            `The text is ${input.length} characters, over the ${TTS_MAX_STREAM_CHARS} the API takes in one request, and ` +
+              `joining ${chosenFormat} parts needs ffmpeg, which is not installed. ${FFMPEG_INSTALL_HINT} Or send up to ` +
+              `${TTS_MAX_STREAM_CHARS} characters per call.`,
           );
         }
 
-        const target = output_path
-          ? isAbsolute(output_path)
-            ? output_path
-            : join(config.outputDir, output_path)
-          : join(config.outputDir, timestampName(chosenVoice, chosenFormat));
+        const target = outputTarget(config, output_path, timestampName(chosenVoice, chosenFormat));
         await mkdir(dirname(target), { recursive: true });
 
         const request = (part: string): TtsRequest => ({
@@ -690,8 +715,12 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
           ...(sample_rate !== undefined ? { sample_rate } : {}),
           ...options,
         });
-        const synthesize = async (part: string): Promise<{ audio: Buffer; spans: WordSpan[] }> =>
-          subtitles ? client.ttsTimed(request(part)) : { audio: await client.tts(request(part)), spans: [] };
+        // Streamed requests take four times the text of buffered ones; a stream that breaks off throws.
+        const synthesize = async (part: string): Promise<{ audio: Buffer; spans: WordSpan[] }> => {
+          const result = subtitles ? await client.ttsWholeTimed(request(part)) : { audio: await client.ttsWhole(request(part)), spans: [] };
+          if (chosenFormat === "wav") fixWavSizes(result.audio);
+          return result;
+        };
 
         const spans: WordSpan[] = [];
         if (chunks.length === 1) {
@@ -712,7 +741,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
             parts.push(part);
             for (const span of result.spans) spans.push({ text: span.text, start: span.start + offset, end: span.end + offset });
             if (subtitles) {
-              offset += isRawFormat(chosenFormat) ? rawSeconds(result.audio.length, chosenFormat, sample_rate) : probeDuration(part);
+              offset += isRawFormat(chosenFormat) ? rawSeconds(result.audio.length, chosenFormat, sample_rate) : joinedSeconds(part);
             }
           }
           if (isRawFormat(chosenFormat)) await concatRaw(parts, target);
@@ -729,11 +758,245 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         ];
         if (subtitles) {
           const cues = buildCues(markSpacing(spans, input), subtitle_line_chars != null ? { lineChars: subtitle_line_chars } : {});
-          const captionPath = join(dirname(target), basename(target, extname(target)) + `.${subtitles}`);
+          const captionPath = captionPathFor(target, subtitles);
           await writeFile(captionPath, subtitles === "srt" ? toSrt(cues) : toVtt(cues), "utf8");
           lines.push(`Captions: ${captionPath} (${cues.length} cues, ${spans.length} words timed).`);
         }
         return text(lines.join("\n"));
+      } catch (err) {
+        return failure(err);
+      } finally {
+        if (workDir) await rm(workDir, { recursive: true, force: true }).catch(() => {});
+      }
+    },
+  );
+
+  server.registerTool(
+    "dialogue_to_speech",
+    {
+      title: "Dialogue to speech (file only)",
+      annotations: { title: "Dialogue to speech (file only)", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+      description:
+        "Synthesize a script of lines, each in its own voice, into one audio file without playing it: podcasts, " +
+        "interviews, radio plays, lessons and phone flows with more than one speaker. Pass the lines in speaking order " +
+        "with a voice each; gap_ms of silence goes between lines. For a single voice use text_to_speech; to hear a " +
+        "conversation now, call queue_speech once per line in that line's voice; play_audio plays the saved file. " +
+        "The file goes to output_path, replacing a file already there, or to a new timestamped name in " +
+        `PAXA_OUTPUT_DIR. A script over ${DIALOGUE_MAX_LINES} lines or ${DIALOGUE_MAX_CHARS} characters is sent in ` +
+        "parts split between lines and joined with the same gap (mp3, opus, and wav need ffmpeg for that). Returns " +
+        "each line's start and end in the audio. With subtitles set, an srt or vtt caption file is written next to " +
+        "the audio, and no cue spans two lines. If synthesis fails partway, the lines already delivered whole, which " +
+        "were paid for, are saved and the result names the line to resume from. Costs the same as text_to_speech for " +
+        `the characters of every line: ${TTS_CREDITS_PER_1K} credits per 1000, ${TTS_TIMED_RATE} with subtitles, ` +
+        `${TTS_DESIGNED_RATE} for a line in a designed voice (voice_...), ${TTS_DESIGNED_TIMED_RATE} with both; the ` +
+        `gap is free. ${EMOTION_TAG_HINT}`,
+      inputSchema: {
+        lines: z
+          .array(
+            z.object({
+              text: z.string().min(1).describe("What this line says, with any direction tags for its delivery"),
+              voice: z
+                .string()
+                .min(1)
+                .describe("The voice that speaks it: a voice id from list_voices, or a designed voice's id (voice_...)"),
+            }),
+          )
+          .min(1)
+          .max(DIALOGUE_SCRIPT_MAX_LINES)
+          .describe(
+            `The lines in speaking order, up to ${DIALOGUE_SCRIPT_MAX_LINES} lines and ${TTS_LONG_TEXT_MAX} characters ` +
+              `in all, at most ${DIALOGUE_MAX_CHARS} in one line. Give each speaker a voice of their own. ${VOICE_PICKS}`,
+          ),
+        gap_ms: z
+          .number()
+          .int()
+          .min(0)
+          .max(5000)
+          .optional()
+          .describe("Silence between one line and the next, in milliseconds (default 300). For a pause inside a line, write a pause tag."),
+        language: z.enum(["auto", "th", "en", "zh"]).optional().describe(TTS_LANGUAGE_HINT),
+        speed: z.number().min(0.5).max(1.5).optional().describe(SPEED_HINT),
+        temperature: z.number().min(0).max(2).optional().describe(TEMPERATURE_HINT),
+        model: z.enum(TTS_MODELS).optional().describe(MODEL_HINT),
+        format: z.enum(AUDIO_FORMATS).optional().describe(FORMAT_HINT),
+        sample_rate: z.literal(SAMPLE_RATES).optional().describe(SAMPLE_RATE_HINT),
+        output_path: z.string().optional().describe(OUTPUT_PATH_HINT),
+        subtitles: z
+          .enum(["srt", "vtt"])
+          .optional()
+          .describe(
+            "Also write a caption file (same name as the audio, .srt or .vtt) timed from the synthesized words. Cues " +
+              "break at sentence punctuation, at pauses, and at the line budget, never inside a word and never across " +
+              "two lines of the script. Bills 1.25x, 1.5x for a line in a designed voice.",
+          ),
+        subtitle_line_chars: z.number().int().min(10).max(120).optional().describe(SUBTITLE_COLUMNS_HINT),
+      },
+    },
+    async ({ lines, gap_ms, language, speed, temperature, model, format, sample_rate, output_path, subtitles, subtitle_line_chars }) => {
+      let workDir: string | null = null;
+      try {
+        const chosenFormat: AudioFormat = format ?? "mp3";
+        const gap = gap_ms ?? 300;
+        const options = speechOptions(config, { language, speed, temperature, model });
+        const total = lines.reduce((n, line) => n + line.text.length, 0);
+        if (total > TTS_LONG_TEXT_MAX) {
+          return failure(`The script is ${total} characters; one call takes up to ${TTS_LONG_TEXT_MAX}. Split it into several files.`);
+        }
+        const overlong = lines.findIndex((line) => line.text.length > DIALOGUE_MAX_CHARS);
+        if (overlong >= 0) {
+          return failure(
+            `Line ${overlong + 1} is ${lines[overlong]?.text.length} characters; one line holds at most ${DIALOGUE_MAX_CHARS}. ` +
+              "Split it into several lines in the same voice.",
+          );
+        }
+
+        // The requests the API takes, split between lines.
+        const groups: Array<{ first: number; lines: DialogueLine[] }> = [];
+        let groupChars = 0;
+        lines.forEach((line, i) => {
+          const last = groups[groups.length - 1];
+          if (!last || last.lines.length >= DIALOGUE_MAX_LINES || groupChars + line.text.length > DIALOGUE_MAX_CHARS) {
+            groups.push({ first: i, lines: [line] });
+            groupChars = line.text.length;
+          } else {
+            last.lines.push(line);
+            groupChars += line.text.length;
+          }
+        });
+        if (groups.length > 1 && !isRawFormat(chosenFormat) && !(hasFfmpeg() && hasFfprobe())) {
+          return failure(
+            `The script is ${lines.length} lines and ${total} characters, over the ${DIALOGUE_MAX_LINES} lines or ` +
+              `${DIALOGUE_MAX_CHARS} characters the API takes in one request, and joining ${chosenFormat} parts needs ` +
+              `ffmpeg, which is not installed. ${FFMPEG_INSTALL_HINT} Or use pcm, mulaw, or alaw, which join without it.`,
+          );
+        }
+
+        const target = outputTarget(config, output_path, timestampName("dialogue", chosenFormat));
+        await mkdir(dirname(target), { recursive: true });
+        const dir = await mkdtemp(join(tmpdir(), "paxa-dialogue-"));
+        workDir = dir;
+
+        // One request at a time (low-concurrency plans stay safe). Each part is saved as it arrives, with the same
+        // silence the API puts between lines at every seam, and the times move along by what came before.
+        const parts: string[] = [];
+        const placed: Array<{ start: number; end: number } | undefined> = [];
+        const spans: Array<WordSpan & { line: number }> = [];
+        const requestIds: string[] = [];
+        let credits: number | undefined = 0;
+        let offset = 0;
+        let delivered = 0;
+        let stopped: Error | undefined;
+        let silence: { file: string; seconds: number } | undefined;
+        for (const [g, group] of groups.entries()) {
+          let result: DialogueOutcome;
+          try {
+            result = await client.dialogue({
+              lines: group.lines,
+              format: chosenFormat,
+              ...(sample_rate !== undefined ? { sample_rate } : {}),
+              ...options,
+              gap_ms: gap,
+              ...(subtitles ? { timestamps: "word" as const } : {}),
+            });
+          } catch (err) {
+            if (err instanceof PaxaApiError && err.line !== undefined) err.line += group.first;
+            if (g === 0) throw err;
+            stopped = err instanceof Error ? err : new Error(String(err));
+            break;
+          }
+          if (result.requestId) requestIds.push(result.requestId);
+          credits = credits === undefined || result.credits === undefined ? undefined : credits + result.credits;
+          if (result.failure instanceof PaxaApiError && result.failure.line !== undefined) result.failure.line += group.first;
+
+          if (result.whole > 0) {
+            if (g > 0 && gap > 0) {
+              if (!silence) {
+                const file = join(dir, `gap.${chosenFormat}`);
+                if (isRawFormat(chosenFormat)) {
+                  const bytes = rawSilence(chosenFormat, sample_rate ?? 24000, gap);
+                  await writeFile(file, bytes);
+                  silence = { file, seconds: rawSeconds(bytes.length, chosenFormat, sample_rate) };
+                } else {
+                  await makeSilence(parts[0] as string, gap / 1000, file, chosenFormat);
+                  silence = { file, seconds: joinedSeconds(file) };
+                }
+              }
+              parts.push(silence.file);
+              offset += silence.seconds;
+            }
+            const file = join(dir, `part-${String(g + 1).padStart(3, "0")}.${chosenFormat}`);
+            await writeFile(file, chosenFormat === "wav" ? fixWavSizes(result.audio) : result.audio);
+            parts.push(file);
+            result.lines.forEach((t, i) => (placed[group.first + i] = { start: t.start + offset, end: t.end + offset }));
+            for (const span of result.spans) {
+              spans.push({ text: span.text, start: span.start + offset, end: span.end + offset, line: group.first + span.line });
+            }
+            delivered = group.first + result.whole;
+            if (!result.failure && g < groups.length - 1) {
+              offset += isRawFormat(chosenFormat) ? rawSeconds(result.audio.length, chosenFormat, sample_rate) : joinedSeconds(file);
+            }
+          }
+          if (result.failure) {
+            stopped = result.failure;
+            break;
+          }
+        }
+
+        if (parts.length === 0) throw stopped ?? new Error("Nothing was synthesized.");
+        if (parts.length === 1) await copyFile(parts[0] as string, target);
+        else if (isRawFormat(chosenFormat)) await concatRaw(parts, target);
+        else await concatAudio(parts, target, chosenFormat, join(dir, "parts.txt"));
+        const bytes = (await stat(target)).size;
+
+        const voices = [...new Set(lines.slice(0, delivered).map((line) => line.voice))];
+        const cost =
+          credits !== undefined
+            ? `${credits.toFixed(2)} credits`
+            : `about ${lines
+                .slice(0, delivered)
+                .reduce((n, line) => n + estimateTtsCredits(line.text.length, ttsRate(line.voice, Boolean(subtitles))), 0)
+                .toFixed(1)} credits`;
+        const out = [
+          `Saved ${(bytes / 1024).toFixed(1)} KiB of ${formatLabel(chosenFormat, sample_rate)} audio to ${target} ` +
+            `(${delivered} line${delivered === 1 ? "" : "s"} in ${voices.length} voice${voices.length === 1 ? "" : "s"}: ` +
+            `${voices.join(", ")}; model ${options.model}, ${gap} ms between lines` +
+            (parts.length > 1 ? `, ${groups.length} requests joined` : "") +
+            `, ${cost}).`,
+        ];
+        const timed = placed.slice(0, delivered);
+        if (timed.some((t) => t !== undefined)) {
+          out.push("Lines (start to end, seconds):");
+          timed.slice(0, LINE_TIMINGS_INLINE).forEach((t, i) => {
+            out.push(`${i + 1}. ${lines[i]?.voice}: ${t ? `${t.start.toFixed(2)} to ${t.end.toFixed(2)}` : "not reported"}`);
+          });
+          if (timed.length > LINE_TIMINGS_INLINE) out.push(`(${timed.length - LINE_TIMINGS_INLINE} more lines not listed)`);
+        }
+        if (subtitles && spans.length > 0) {
+          const lineChars = subtitle_line_chars ?? defaultLineChars(lines.map((line) => line.text).join(""));
+          const byLine = new Map<number, WordSpan[]>();
+          for (const span of spans) {
+            const group = byLine.get(span.line);
+            if (group) group.push(span);
+            else byLine.set(span.line, [span]);
+          }
+          const cues: Cue[] = [];
+          for (const [i, lineSpans] of [...byLine.entries()].sort((a, b) => a[0] - b[0])) {
+            cues.push(...buildCues(markSpacing(lineSpans, lines[i]?.text ?? ""), { lineChars }));
+          }
+          const captionPath = captionPathFor(target, subtitles);
+          await writeFile(captionPath, subtitles === "srt" ? toSrt(cues) : toVtt(cues), "utf8");
+          out.push(`Captions: ${captionPath} (${cues.length} cues, ${spans.length} words timed).`);
+        }
+        if (requestIds.length > 0) out.push(`Request id${requestIds.length > 1 ? "s" : ""}: ${requestIds.join(", ")}.`);
+        if (!stopped) return text(out.join("\n"));
+
+        const why = stopped instanceof PaxaApiError ? stopped.display() : stopped.message;
+        out.unshift(
+          `Stopped at line ${delivered + 1} of ${lines.length} (${lines[delivered]?.voice}): ${why}`,
+          `The ${delivered} line${delivered === 1 ? "" : "s"} before it arrived whole and were paid for, so they are saved. ` +
+            `To finish, call dialogue_to_speech again with lines ${delivered + 1} onward and another output_path, then join the files.`,
+        );
+        return { content: [{ type: "text", text: out.join("\n") }], isError: true };
       } catch (err) {
         return failure(err);
       } finally {
@@ -1247,9 +1510,9 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
       annotations: { title: "Transcribe a recording", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
       description:
         "Transcribe a local recording or video of speech in Thai, English, Mandarin Chinese, or another language, " +
-        "code-switching included (mp3, wav, flac, ogg, m4a, aac, " +
+        "code-switching included (mp3, wav including mu-law and A-law phone recordings, flac, ogg, m4a, aac, " +
         "webm; or mp4, mov, mkv, avi and other video files, whose sound track is extracted locally with ffmpeg; " +
-        "up to 60 minutes and 25 MiB) with Paxa STT. The transcript comes back inline, so nothing needs " +
+        "up to 120 minutes and 95 MiB) with Paxa STT. The transcript comes back inline, so nothing needs " +
         "to be read from disk afterwards; optionally it is also saved as txt, json (with word timings " +
         "and segments), srt, or vtt, named after the recording. Existing files are never overwritten. " +
         "Detects the language and can label speakers; nothing is translated. For one live answer from the " +
@@ -1276,7 +1539,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         diarization: z
           .boolean()
           .optional()
-          .describe("Label speakers, for recordings under 9 minutes. The transcript is then returned as one line per turn, and subtitle cues never cross a speaker change."),
+          .describe("Label speakers across the whole recording (slower to return). The transcript is then returned as one line per turn, and subtitle cues never cross a speaker change."),
         style: z
           .enum(["verbatim", "clean"])
           .optional()
@@ -1341,7 +1604,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         const audioInfo = await stat(audioPath);
         if (audioInfo.size > STT_MAX_BYTES) {
           return failure(
-            `${isVideo ? "The sound track of " : ""}${path} is ${(audioInfo.size / 1024 / 1024).toFixed(1)} MiB; the transcription limit is 25 MiB per file.`,
+            `${isVideo ? "The sound track of " : ""}${path} is ${(audioInfo.size / 1024 / 1024).toFixed(1)} MiB; the transcription limit is 95 MiB per file.`,
           );
         }
 
@@ -1350,7 +1613,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         const formats = new Set(save ?? []);
         const wantSrt = formats.has("srt");
         const wantVtt = formats.has("vtt");
-        const request: SttRequest = { audio: (await readFile(audioPath)).toString("base64") };
+        const request: SttRequest = { audio: await openAsBlob(audioPath) };
         if (language) request.language = language;
         if (diarization) request.diarization = true;
         if (style) request.style = style;

@@ -73,6 +73,18 @@ if (zhPath) {
   if (long.length > 0) console.log("WARNING: Chinese caption lines over 32 columns:", long);
   if (/[\u4E00-\u9FFF] [\u4E00-\u9FFF]/.test(srt)) console.log("WARNING: spaces between Chinese characters in captions");
 } else console.log("WARNING: no Mandarin file reported");
+// A two-voice dialogue with line timings and captions (about 1.5 credits)
+const dialogue = await call("dialogue_to_speech", {
+  lines: [
+    { text: "Welcome back to the show. Today we talk about voices.", voice: "foithong" },
+    { text: "Thanks for having me! I have been looking forward to this.", voice: "massaman" },
+  ],
+  gap_ms: 400,
+  subtitles: "srt",
+});
+if (!/2 lines in 2 voices/.test(dialogue.body)) console.log("WARNING: the dialogue was not reported as 2 lines in 2 voices");
+if (!/^2\. massaman: [\d.]+ to [\d.]+$/m.test(dialogue.body)) console.log("WARNING: no timing for the dialogue's second line");
+const dialoguePath = dialogue.body.match(/to (\/\S+)/)?.[1];
 const savedPath = tts.body.match(/to (\/\S+)/)?.[1];
 
 // Round trip: transcribe the file just synthesized, with every output format (about 0.5 credits)
@@ -98,6 +110,11 @@ if (savedPath) {
   if (zhPath) {
     const zhStt = await call("transcribe_audio", { file_path: zhPath, language: "zh", save: ["srt"] }, 300_000);
     if (!/天气/.test(zhStt.body)) console.log("WARNING: the Mandarin transcript does not contain 天气");
+  }
+  // Speaker labels on the dialogue (about 1.5 credits)
+  if (dialoguePath) {
+    const d = await call("transcribe_audio", { file_path: dialoguePath, language: "en", diarization: true }, 300_000);
+    if (!/Speaker 1:/.test(d.body) || !/Speaker 2:/.test(d.body)) console.log("WARNING: the dialogue did not come back as two speakers");
   }
   // Rate that transcription good through the feedback endpoint (free)
   const rid = stt.body.match(/Request id: (\S+?)\.?(\s|$)/)?.[1];

@@ -3,7 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { PaxaApiError, type SpeechOptions } from "./api.js";
+import { PaxaApiError, streamCutMessage, type SpeechOptions } from "./api.js";
 import {
   findPlayer,
   findStreamingPlayer,
@@ -366,13 +366,7 @@ export class SpeechEngine {
       segment.file = file;
     }
 
-    if (streamError !== undefined && !controller.signal.aborted) {
-      const why = streamError instanceof Error ? streamError.message : String(streamError);
-      throw new Error(
-        `The audio stream ended early (${why}). The API refunds a stream that fails partway, and does not charge one ` +
-          "it refuses partway (out of credits, or the key's spending cap), so check the balance if it repeats.",
-      );
-    }
+    if (streamError !== undefined && !controller.signal.aborted) throw new Error(streamCutMessage(streamError));
     if (segment.status === "playing" || segment.status === "synthesizing") {
       segment.status = result.stopped ? "skipped" : "done";
     }

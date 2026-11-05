@@ -70,6 +70,7 @@ into `~/.cursor/mcp.json` or VS Code's MCP settings. Then replace
 | `control_playback` | Control the shared audio queue: `status`, `pause`, `resume`, `skip`, `clear` | free |
 | `play_audio` | Play a local audio file through the speakers | free |
 | `text_to_speech` | Synthesize speech to an audio file (mp3, opus, wav, raw pcm, or mulaw and alaw for phone lines, with `sample_rate` for pcm and wav) without playing it: long scripts are split and joined into one file, and `subtitles` writes a matching srt or vtt | 10 per 1000 chars (12.5 with subtitles or in a designed voice, 15 with both) |
+| `dialogue_to_speech` | Synthesize a script of lines, each in its own voice, to one audio file with a set gap between lines: returns each line's start and end, and `subtitles` writes captions that never cross two lines | 10 per 1000 chars, each line at its voice's rate (12.5 with subtitles or in a designed voice, 15 with both) |
 | `design_voice` | Make a new voice from a written description and play the line it speaks | 5 per call |
 | `refine_voice` | Change a draft voice in words, such as "a little lower and slower", and play its new line | 5 per call |
 | `save_voice` | Save a draft as one of your voices, with an id the speech tools accept | free |
@@ -80,7 +81,7 @@ into `~/.cursor/mcp.json` or VS Code's MCP settings. Then replace
 | `extract_fields` | Fill a schema of typed fields (Thai IDs, dates, amounts, banks, line items) from a local PDF or image; every value is printed in the document or null with the reason | 13 per page (19.5 for schemas over 50 fields) |
 | `listen` | Record one spoken turn from the microphone and return its transcript; the API detects when the user stops talking | 12.5 per minute listened |
 | `send_feedback` | Rate an output or report a problem to the Paxa team, tied to the request ids the tools print | free |
-| `transcribe_audio` | Transcribe a local recording or video (Thai, English, Mandarin, other languages, mixed) to text, with optional speaker labels, word timings, srt or vtt subtitles, and a list of pauses to cut | 8.33 per minute |
+| `transcribe_audio` | Transcribe a local recording or video (Thai, English, Mandarin, other languages, mixed; up to 120 minutes) to text, with optional speaker labels, word timings, srt or vtt subtitles, and a list of pauses to cut | 8.33 per minute |
 | `list_voices` | Your designed voices and slots, then the TTS voice roster with character notes | free |
 | `list_models` | Available models, limits, and pricing | free |
 | `get_account` | Credit balance, plan, and rate limits | free |
@@ -240,7 +241,7 @@ has examples.
 
 ## Content creation
 
-Three things creators asked for, each the local half of an API call:
+Four things creators asked for, each the local half of an API call:
 
 - **Transcribe a video.** Give `transcribe_audio` an mp4, mov, mkv, or
   most other containers; ffmpeg pulls the sound track out locally and the
@@ -254,9 +255,16 @@ Three things creators asked for, each the local half of an API call:
   where the writer put a space. A Chinese character takes two columns of the
   line budget, so Mandarin lines hold 16 characters by default. Timed
   synthesis bills 1.25x.
-- **Long narration to one file.** Scripts past 5,000 characters are split
+- **Long narration to one file.** Scripts past 20,000 characters are split
   at paragraphs and sentences, synthesized part by part, and joined into a
   single file, captions offset to match.
+- **Conversations in several voices.** `dialogue_to_speech` takes the lines
+  in speaking order, each with its voice, and writes one file with `gap_ms`
+  of silence between lines (300 by default). The result lists where each
+  line starts and ends, and caption cues never cross from one line to the
+  next. Scripts past 100 lines or 20,000 characters are sent in parts and
+  joined with the same gap. If a request fails partway, the lines that
+  arrived whole are kept and the result names the line to resume from.
 
 ffmpeg is the one requirement for video input and for joining mp3, opus, or
 wav parts (`brew install ffmpeg` on macOS). Raw pcm, mulaw, and alaw parts
@@ -270,7 +278,8 @@ Indonesian, Malay, Portuguese, Russian, Spanish, and Vietnamese. `target` is
 required; the source is detected per segment, so mixed-language text works,
 and `source` pins it when detection is wrong. Formality, borrowed words,
 glossaries, and style `examples` follow the target, and `alternatives` (up
-to 5) returns extra renderings, each billed as another pass over the text.
+to 5) sets how many renderings come back in total, the best first, each
+billed as another pass over the text.
 Send a whole glossary: terms that do not appear in the text are dropped
 before billing, and the result says how many were sent.
 
@@ -298,7 +307,7 @@ through the same session.
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
 | `PAXA_API_KEY` | yes | | Your API key. The server starts without it, but every tool that calls the API then fails with setup instructions the agent can relay |
-| `PAXA_OUTPUT_DIR` | no | working directory | Where `text_to_speech` saves files |
+| `PAXA_OUTPUT_DIR` | no | working directory | Where `text_to_speech` and `dialogue_to_speech` save files |
 | `PAXA_TTS_MODEL` | no | `paxa-tts-flash-v2` | Speech model for every call that does not pick one. v2 has 50 voices that each speak Thai, English, and Mandarin, and all read direction tags. `paxa-tts-flash-v1` only for regional Thai accents, the fixed emotion tags on `khanomchan` and `kaprao`, or one of the eight voices v2 does not carry |
 | `PAXA_DEFAULT_VOICE` | no | `foithong` | Voice used when a tool call does not pick one: a catalog voice from `list_voices`, or one of your designed voices (`voice_...`). On v2 every catalog voice speaks all three languages, so pick by character |
 | `PAXA_VOCABULARY` | no | | Keyword pinning for `transcribe_audio`: comma-separated names and terms the transcript should spell as written (product names, people, jargon) |

@@ -12,6 +12,7 @@ const EXPECTED_TOOLS = [
   "control_playback",
   "play_audio",
   "text_to_speech",
+  "dialogue_to_speech",
   "design_voice",
   "refine_voice",
   "save_voice",

@@ -15,8 +15,14 @@ export const TRANSLATE_LANGUAGES = ["th", "en", "zh", "ja", "ko", "ar", "fr", "d
 export type TranslateLanguage = (typeof TRANSLATE_LANGUAGES)[number];
 
 export const TTS_MAX_CHARS = 5000;
+/** A streamed request takes four times the buffered ceiling, on both models (max_stream_chars on GET /v1/models). */
+export const TTS_MAX_STREAM_CHARS = 20_000;
+/** POST /v1/tts/dialogue: at most this many lines, holding at most this many characters in all. */
+export const DIALOGUE_MAX_LINES = 100;
+export const DIALOGUE_MAX_CHARS = 20_000;
 export const OCR_MAX_BYTES = 10 * 1024 * 1024;
-export const STT_MAX_BYTES = 25 * 1024 * 1024;
+/** 95 MiB, the decoded ceiling of /v1/stt. Only a multipart upload reaches it: a JSON body caps at about 71 MiB of file. */
+export const STT_MAX_BYTES = 99_614_720;
 export const EXTRACT_MAX_BYTES = 10 * 1024 * 1024;
 
 const RETRYABLE_CODES = new Set([
@@ -65,8 +71,12 @@ const HINTS: Record<string, string> = {
   validation: "The request broke a rule (the field and reason above say which); nothing was charged. Fix it and retry.",
   text_too_long: "Split the text into shorter requests.",
   request_too_large:
-    "Shorten the text, context, instructions, examples, or glossary; every field counts toward the request ceiling, " +
-    "and each extra rendering (alternatives) counts the text again.",
+    "For translation, shorten the text, context, instructions, examples, or glossary: every field counts toward the " +
+    "request ceiling, and each rendering (alternatives) counts the text again. A dialogue's lines hold 20,000 " +
+    "characters in all.",
+  body_too_large: "The request body is larger than the endpoint reads; nothing was charged. Send a smaller file.",
+  audio_too_long: "The recording runs over 120 minutes; nothing was charged. Split it at a pause and transcribe the parts.",
+  audio_too_large: "The recording is over 95 MiB; nothing was charged. Compress it (mono Opus or mp3) or split it.",
   unsupported_language:
     "The translation model does not take that language code, or a pinned source equals the target. The codes are " +
     `${TRANSLATE_LANGUAGES.join(", ")}; leave source out to detect it.`,
@@ -127,6 +137,9 @@ export class PaxaApiError extends Error {
     super(detail && detail.length > 0 ? detail : code);
   }
 
+  /** The 0-based line of a dialogue script the error names. A caller that split the script maps it to the whole. */
+  line?: number;
+
   get retryable(): boolean {
     return RETRYABLE_CODES.has(this.code);
   }
@@ -142,10 +155,70 @@ export class PaxaApiError extends Error {
       else if (this.code === "schema_invalid") out += ` The problem is at the schema root: ${reason}.`;
       else out += ` Reason: ${reason}.`;
     }
+    if (this.line !== undefined) out += ` The problem is in line ${this.line + 1} of the script.`;
     const hint = hintFor(this.code, this.status);
     if (hint) out += ` ${hint}`;
     else if (this.retryable) out += " This error is retryable.";
     return out;
+  }
+}
+
+/** RFC 9457 problem details as the API sends them, on an error response or inside a stream's error event. */
+interface ProblemBody {
+  title?: string;
+  status?: number;
+  detail?: string;
+  path?: string;
+  reason?: string;
+  line?: number;
+}
+
+function problemError(body: ProblemBody, status: number, requestId: string | undefined): PaxaApiError {
+  const problem = typeof body.reason === "string" ? { path: typeof body.path === "string" ? body.path : "", reason: body.reason } : undefined;
+  const err = new PaxaApiError(body.title ?? "unknown", body.status ?? status, requestId, body.detail, problem);
+  if (typeof body.line === "number") err.line = body.line;
+  return err;
+}
+
+/** Why a stream that broke off failed. A cut raw stream has no end marker: the API aborts the connection instead. */
+export function streamCutMessage(err: unknown): string {
+  const why = err instanceof Error ? err.message : String(err);
+  return (
+    `The audio stream ended early (${why}). The API refunds a stream that fails partway, and does not charge one ` +
+    "it refuses partway (out of credits, or the key's spending cap), so check the balance if it repeats."
+  );
+}
+
+/**
+ * Why an NDJSON stream that broke off failed. A failure or refusal there ends with an error event, so a stream with
+ * neither done nor error ran out of the request's time or lost its connection, and the API keeps that charge.
+ */
+export function eventStreamCutMessage(err: unknown): string {
+  const why = err instanceof Error ? err.message : String(err);
+  return (
+    `The stream broke off before its end (${why}), with no error event, so the API keeps its charge. Retry; if it ` +
+    "repeats, report the request id with send_feedback."
+  );
+}
+
+/** The JSON events of an NDJSON body, one per line. A body that breaks off, even partway through a line, throws. */
+async function* ndjsonEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<Record<string, unknown>> {
+  const decoder = new TextDecoder();
+  let pending = "";
+  try {
+    for await (const chunk of body) {
+      pending += decoder.decode(chunk, { stream: true });
+      let newline: number;
+      while ((newline = pending.indexOf("\n")) >= 0) {
+        const line = pending.slice(0, newline).trim();
+        pending = pending.slice(newline + 1);
+        if (line) yield JSON.parse(line) as Record<string, unknown>;
+      }
+    }
+    pending += decoder.decode();
+    if (pending.trim()) yield JSON.parse(pending) as Record<string, unknown>;
+  } catch (err) {
+    throw new Error(eventStreamCutMessage(err));
   }
 }
 
@@ -176,6 +249,41 @@ export interface TtsRequest {
   speed?: number;
   /** How much a reading varies from one request to the next, 0 to 2 (default 0.5). v2 only; v1 refuses any other value. */
   temperature?: number;
+}
+
+/** One timing span of synthesized speech, in seconds from the start of the response's audio. */
+export interface TtsSpan {
+  text: string;
+  start: number;
+  end: number;
+}
+
+export interface DialogueLine {
+  text: string;
+  voice: string;
+}
+
+export interface DialogueRequest extends Omit<TtsRequest, "text" | "voice"> {
+  lines: DialogueLine[];
+  /** Silence between one line and the next, 0 to 5000 ms (default 300). */
+  gap_ms?: number;
+  timestamps?: "word";
+}
+
+/** What a dialogue request delivered. Without failure every line arrived; with one, the lines delivered whole. */
+export interface DialogueOutcome {
+  /** The audio of the lines delivered whole, in the requested format. */
+  audio: Buffer;
+  /** How many lines arrived whole: all of them unless failure is set. */
+  whole: number;
+  /** Each whole line's place in the audio. Empty when the stream broke off with no event to say. */
+  lines: Array<{ start: number; end: number }>;
+  /** Word spans of the whole lines, measured from the start of this request's audio. */
+  spans: Array<TtsSpan & { line: number }>;
+  /** Credits the request kept: the charge, or what the whole lines cost when it failed. */
+  credits: number | undefined;
+  requestId: string | undefined;
+  failure?: Error;
 }
 
 /** Per-request synthesis settings shared by the speech tools and the engine. */
@@ -341,8 +449,8 @@ export interface OcrRequest {
 }
 
 export interface SttRequest {
-  /** Base64 of the recording's bytes; the API reads the format and length from the bytes. */
-  audio: string;
+  /** The recording, sent as a multipart file part (openAsBlob reads it from disk); the API reads format and length from it. */
+  audio: Blob;
   model?: string;
   language?: string;
   timestamps?: "word";
@@ -448,6 +556,7 @@ export class PaxaClient {
     path: string,
     init: {
       method?: string;
+      /** JSON-encoded, except FormData, which goes as multipart with fetch's own boundary. */
       body?: unknown;
       idempotent?: boolean;
       timeoutMs?: number;
@@ -458,7 +567,8 @@ export class PaxaClient {
     const headers: Record<string, string> = {
       authorization: `Bearer ${this.apiKey}`,
     };
-    if (init.body !== undefined) headers["content-type"] = "application/json";
+    const multipart = init.body instanceof FormData;
+    if (init.body !== undefined && !multipart) headers["content-type"] = "application/json";
     if (init.idempotent) headers["idempotency-key"] = randomUUID();
 
     let res: Response;
@@ -466,7 +576,7 @@ export class PaxaClient {
       res = await fetch(this.baseUrl + path, {
         method: init.method ?? "GET",
         headers,
-        body: init.body === undefined ? undefined : JSON.stringify(init.body),
+        body: init.body === undefined ? undefined : multipart ? (init.body as FormData) : JSON.stringify(init.body),
         signal: eitherSignal(init.signal, AbortSignal.timeout(init.timeoutMs ?? 60_000)),
       });
     } catch (err) {
@@ -479,20 +589,11 @@ export class PaxaClient {
 
     if (!res.ok) {
       const requestId = res.headers.get("x-request-id") ?? undefined;
-      let code = "unknown";
-      let detail: string | undefined;
       if ((res.headers.get("content-type") ?? "").includes("json")) {
-        const body = (await res.json().catch(() => undefined)) as
-          | { title?: string; detail?: string; path?: string; reason?: string }
-          | undefined;
-        if (body?.title) code = body.title;
-        detail = body?.detail;
-        if (typeof body?.reason === "string") {
-          const path = typeof body.path === "string" ? body.path : "";
-          throw new PaxaApiError(code, res.status, requestId, detail, { path, reason: body.reason });
-        }
+        const body = (await res.json().catch(() => undefined)) as ProblemBody | undefined;
+        if (body) throw problemError(body, res.status, requestId);
       }
-      throw new PaxaApiError(code, res.status, requestId, detail);
+      throw new PaxaApiError("unknown", res.status, requestId);
     }
     return res;
   }
@@ -507,35 +608,111 @@ export class PaxaClient {
     return Buffer.from(await res.arrayBuffer());
   }
 
-  /** Synthesize with word timings. Bills 1.25 times the untimed request; the audio bytes are the same. */
-  async ttsTimed(req: TtsRequest): Promise<{ audio: Buffer; spans: Array<{ text: string; start: number; end: number }> }> {
-    const res = await this.request("/v1/tts", {
-      method: "POST",
-      body: { model: TTS_MODEL, format: "mp3", ...req, stream: false, timestamps: "word" },
-      idempotent: true,
-      timeoutMs: 300_000,
-    });
-    const body = (await res.json()) as { audio: string; timing?: { spans?: Array<{ text: string; start: number; end: number }> } };
-    return { audio: Buffer.from(body.audio, "base64"), spans: body.timing?.spans ?? [] };
-  }
-
   /**
-   * Streaming synthesis. Resolves as soon as the response headers arrive; mp3
+   * Streaming synthesis. Resolves as soon as the response headers arrive; audio
    * chunks then follow on the body while synthesis is still running. A failure
    * after the first byte, or a refusal after it (out of credits, the key's cap),
-   * shows up as a body that ends early, not as an error response; the API
-   * refunds the first and does not charge the second.
+   * aborts the connection, so reading the body throws; the API refunds the first
+   * and does not charge the second. No other end signal exists on a raw stream.
    */
-  async ttsStream(req: TtsRequest, signal?: AbortSignal): Promise<ReadableStream<Uint8Array>> {
+  async ttsStream(req: TtsRequest, signal?: AbortSignal, timeoutMs = 120_000): Promise<ReadableStream<Uint8Array>> {
     const res = await this.request("/v1/tts", {
       method: "POST",
       body: { model: TTS_MODEL, format: "mp3", ...req, stream: true },
       idempotent: true,
-      timeoutMs: 120_000,
+      timeoutMs,
       signal,
     });
     if (!res.body) throw new Error("The Paxa API returned an empty audio stream.");
     return res.body;
+  }
+
+  /** Synthesize up to TTS_MAX_STREAM_CHARS into memory over a stream. A stream that breaks off throws streamCutMessage. */
+  async ttsWhole(req: TtsRequest): Promise<Buffer> {
+    const body = await this.ttsStream(req, undefined, 900_000);
+    const chunks: Buffer[] = [];
+    try {
+      for await (const chunk of body) chunks.push(Buffer.from(chunk));
+    } catch (err) {
+      throw new Error(streamCutMessage(err));
+    }
+    return Buffer.concat(chunks);
+  }
+
+  /** Like ttsWhole, with word timings from the NDJSON stream, whose done and error events say how it ended. Bills 1.25x. */
+  async ttsWholeTimed(req: TtsRequest): Promise<{ audio: Buffer; spans: TtsSpan[] }> {
+    const res = await this.request("/v1/tts", {
+      method: "POST",
+      body: { model: TTS_MODEL, format: "mp3", ...req, stream: true, timestamps: "word" },
+      idempotent: true,
+      timeoutMs: 900_000,
+    });
+    const requestId = res.headers.get("x-request-id") ?? undefined;
+    if (!res.body) throw new Error("The Paxa API returned an empty audio stream.");
+    const audio: Buffer[] = [];
+    const spans: TtsSpan[] = [];
+    for await (const event of ndjsonEvents(res.body)) {
+      if (event.type === "chunk") {
+        if (typeof event.audio === "string" && event.audio) audio.push(Buffer.from(event.audio, "base64"));
+        spans.push(...((event.spans as TtsSpan[] | undefined) ?? []));
+      } else if (event.type === "done") {
+        return { audio: Buffer.concat(audio), spans };
+      } else if (event.type === "error") {
+        throw problemError((event.error ?? {}) as ProblemBody, res.status, requestId);
+      }
+    }
+    throw new Error(eventStreamCutMessage("the stream closed with no done event"));
+  }
+
+  /**
+   * Speak a script of lines, each in its own voice, as one audio file (POST /v1/tts/dialogue, always NDJSON).
+   * Lines arrive in order, so when the stream fails or breaks off, every line below the one in flight is whole;
+   * the outcome keeps those, which the request paid for, instead of throwing them away.
+   */
+  async dialogue(req: DialogueRequest): Promise<DialogueOutcome> {
+    const res = await this.request("/v1/tts/dialogue", {
+      method: "POST",
+      body: { model: TTS_MODEL, format: "mp3", ...req },
+      idempotent: true,
+      timeoutMs: 900_000,
+    });
+    const requestId = res.headers.get("x-request-id") ?? undefined;
+    const charged = Number.parseFloat(res.headers.get("x-credits-charged") ?? "");
+    const perLine: Buffer[][] = [];
+    const spans: Array<TtsSpan & { line: number }> = [];
+    let lastLine = -1;
+    const outcome = (whole: number, lines: DialogueOutcome["lines"], credits: number | undefined, failure?: Error): DialogueOutcome => ({
+      audio: Buffer.concat(perLine.slice(0, whole).flat()),
+      whole,
+      lines: lines.slice(0, whole),
+      spans: spans.filter((span) => span.line < whole),
+      credits,
+      requestId,
+      ...(failure ? { failure } : {}),
+    });
+    if (!res.body) throw new Error("The Paxa API returned an empty audio stream.");
+    try {
+      for await (const event of ndjsonEvents(res.body)) {
+        if (event.type === "chunk") {
+          const line = Number(event.line);
+          lastLine = Math.max(lastLine, line);
+          if (typeof event.audio === "string" && event.audio) (perLine[line] ??= []).push(Buffer.from(event.audio, "base64"));
+          for (const span of (event.spans as TtsSpan[] | undefined) ?? []) spans.push({ ...span, line });
+        } else if (event.type === "done") {
+          const lines = event.lines as DialogueOutcome["lines"];
+          return outcome(lines.length, lines, Number.isFinite(charged) ? charged : undefined);
+        } else if (event.type === "error") {
+          const lines = (event.lines as DialogueOutcome["lines"] | undefined) ?? [];
+          const credits = typeof event.credits === "number" ? event.credits : undefined;
+          return outcome(lines.length, lines, credits, problemError((event.error ?? {}) as ProblemBody, res.status, requestId));
+        }
+      }
+      throw new Error(eventStreamCutMessage("the stream closed with no done event"));
+    } catch (err) {
+      // Broke off with no event: the charge stands, and the lines before the one in flight are whole.
+      const failure = err instanceof Error ? err : new Error(String(err));
+      return outcome(Math.max(0, lastLine), [], Number.isFinite(charged) ? charged : undefined, failure);
+    }
   }
 
   /** Parse a JSON body and attach the response's x-request-id. */
@@ -563,16 +740,25 @@ export class PaxaClient {
   }
 
   /**
-   * Transcribe a recording. Hour-long files take minutes, and the API may
-   * answer a long job with status 200 and an error object, so that case is
-   * turned into a PaxaApiError here.
+   * Transcribe a recording, uploaded as multipart: no base64 inflation, so the
+   * full 95 MiB fits. Long recordings take minutes (the docs allow 900 s for
+   * upload and work), and the API may answer a long job with status 200 and an
+   * error object, so that case is turned into a PaxaApiError here.
    */
   async stt(req: SttRequest): Promise<SttResponse & WithRequestId> {
+    const { audio, vocabulary, model, ...fields } = req;
+    const form = new FormData();
+    form.append("model", model ?? STT_MODEL);
+    for (const [key, value] of Object.entries(fields)) {
+      if (value !== undefined) form.append(key, String(value));
+    }
+    for (const term of vocabulary ?? []) form.append("vocabulary", term);
+    form.append("audio", audio, "audio");
     const res = await this.request("/v1/stt", {
       method: "POST",
-      body: { model: STT_MODEL, ...req },
+      body: form,
       idempotent: true,
-      timeoutMs: 600_000,
+      timeoutMs: 900_000,
     });
     const body = await this.json<SttResponse & { title?: string; detail?: string }>(res);
     if (typeof body.text !== "string") {
