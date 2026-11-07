@@ -6,7 +6,7 @@ export const DEFAULT_TTS_MODEL: TtsModel = "paxa-tts-flash-v2";
 export const V1_ONLY_VOICES = ["donut", "toast", "padthai", "yoyo", "somtam", "larb", "khaosoi", "roti"];
 
 export interface Config {
-  /** Undefined when PAXA_API_KEY is not set; the server still starts so the agent can relay MISSING_KEY_MESSAGE. */
+  /** Undefined when PAXA_API_KEY is not set: requests then use the sign-in on this machine (auth.ts), if any. */
   apiKey: string | undefined;
   baseUrl: string;
   outputDir: string;
@@ -32,9 +32,10 @@ export function parseVocabulary(body: string, separator: "," | "\n"): string[] {
 }
 
 export const MISSING_KEY_MESSAGE =
-  "PAXA_API_KEY is not set. Ask the user to create an API key at https://paxalabs.com/app/keys " +
-  'and pass it to the server, e.g. { "env": { "PAXA_API_KEY": "pxa_..." } } in their MCP client ' +
-  "configuration, then restart the server.";
+  "Not signed in to Paxa, and PAXA_API_KEY is not set. Call the sign_in tool (or run " +
+  "`npx -y @paxalabs/mcp login` in a terminal): it opens the Paxa sign-in page in the user's browser, the user " +
+  "approves there, and new accounts include free credits. An API key from https://paxalabs.com/app/keys in " +
+  "PAXA_API_KEY, set in the MCP client configuration, works instead.";
 
 /** A voice the account designed and saved: its id starts with voice_ (case is ignored) and it speaks only on v2. */
 export function isDesignedVoice(voice: string): boolean {

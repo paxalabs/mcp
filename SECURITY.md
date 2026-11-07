@@ -19,12 +19,24 @@ paxalabs.com website go to the same address.
 ## What this package does with your data
 
 - The only data sent to `api.paxalabs.com` (over HTTPS) is what the agent
-  passes to a tool: the text to speak, translate, or save, and the file
-  given to `ocr_document`. Nothing else from the conversation is read or
-  sent.
+  passes to a tool: the text to speak, translate, or save, the file given
+  to `ocr_document`, `extract_fields`, or `transcribe_audio`, and the
+  microphone audio while `listen` runs. Nothing else from the conversation
+  is read or sent.
 - The API key is read from the `PAXA_API_KEY` environment variable, or from
   the paxa entry in `~/.claude.json` when `paxa say` runs as a Claude Code
   hook. This package never writes the key anywhere.
+- Without a key, `sign_in` (or `paxa login`) signs in to your Paxa account
+  on paxalabs.com, in your browser. The tokens it receives are kept in one
+  file: `~/Library/Application Support/paxa/auth.json` on macOS,
+  `$XDG_CONFIG_HOME/paxa/auth.json` (or `~/.config/paxa/auth.json`) on
+  Linux, `%APPDATA%\paxa\auth.json` on Windows, readable only by you on
+  macOS and Linux (mode 0600 in a 0700 folder). `paxa logout` revokes the
+  sign-in and removes the file; disconnecting the app under API keys at
+  https://paxalabs.com/app/keys ends it from the website.
+- The sign-in page opens with the system's opener: `open` on macOS,
+  `xdg-open` on Linux, `cmd /c start` on Windows, which refuses any address
+  containing shell metacharacters.
 - Synthesized audio is written to a temporary directory for playback and
   removed when the server exits. `text_to_speech` writes only to the path
   or output directory you configure.

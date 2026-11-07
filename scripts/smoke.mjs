@@ -26,6 +26,7 @@ const EXPECTED_TOOLS = [
   "send_feedback",
   "list_voices",
   "list_models",
+  "sign_in",
   "get_account",
 ];
 

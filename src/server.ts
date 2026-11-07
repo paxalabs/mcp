@@ -38,9 +38,18 @@ import {
   type TranslateRequest,
   type VoiceDesignRequest,
 } from "./api.js";
+import {
+  type DeviceLogin,
+  SIGN_IN_API,
+  type StoredAuth,
+  finishDeviceLogin,
+  openInBrowser,
+  readStoredAuth,
+  startDeviceLogin,
+  verifiedSignIn,
+} from "./auth.js";
 import { chunkText } from "./chunk.js";
 import {
-  MISSING_KEY_MESSAGE,
   TTS_MODELS,
   defaultVoiceWarning,
   isDesignedVoice,
@@ -106,7 +115,10 @@ const PACKAGE_VERSION = (createRequire(import.meta.url)("../package.json") as { 
 const ICON_URL = "https://raw.githubusercontent.com/paxalabs/mcp/main/assets/icon.png";
 /** A short note to the agent about the newest tools, shown with the server instructions at connect time. */
 const WHATS_NEW =
-  `New in ${PACKAGE_VERSION}: dialogue_to_speech writes a conversation to one audio file, each line in its own ` +
+  `New in ${PACKAGE_VERSION}: the server no longer needs an API key. sign_in connects the user's Paxa account ` +
+  "through their browser (the user approves on the Paxa sign-in page); the sign-in serves every session on this " +
+  "machine and stays until it goes 30 days unused, and an API key in PAXA_API_KEY, when set, is used instead. " +
+  "Since 0.1.0-beta.18: dialogue_to_speech writes a conversation to one audio file, each line in its own " +
   "voice, with the line timings and captions that never cross two lines; text_to_speech sends up to 20,000 " +
   "characters per request, so long scripts join fewer parts; transcribe_audio takes recordings up to 120 minutes " +
   "and 95 MiB, labels speakers across the whole length, and reads mu-law and A-law phone recordings. Since " +
@@ -430,10 +442,11 @@ function timestampName(voice: string, format: string): string {
 }
 
 export function createServer(config: Config, client: PaxaClient, engine: SpeechEngine): McpServer {
-  const keyWarning = config.apiKey
-    ? ""
-    : ` WARNING: ${MISSING_KEY_MESSAGE} Until then every tool that calls the API fails with ` +
-      "that message; control_playback and play_audio still work.";
+  const keyWarning =
+    config.apiKey || readStoredAuth()
+      ? ""
+      : " Not signed in yet: before the first tool that calls the API, call sign_in, which opens the Paxa sign-in " +
+        "page in the user's browser for them to approve. control_playback and play_audio work without it.";
   const voiceWarning = defaultVoiceWarning(config);
   const defaultVoiceNote = voiceWarning ? ` WARNING: ${voiceWarning} Tell the user.` : "";
   const drafts = new DraftStore();
@@ -457,7 +470,8 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
         "play_audio replays a local audio file; translate translates text between 15 languages; " +
         "ocr_document runs OCR on a local PDF or image; extract_fields fills a schema of typed " +
         "fields from a local document; transcribe_audio turns a local recording into text and " +
-        "subtitles; listen records one spoken turn from the microphone and returns its transcript. " +
+        "subtitles; listen records one spoken turn from the microphone and returns its transcript; sign_in " +
+        "connects the user's Paxa account through their browser when no API key is configured. " +
         "Paid tools spend account credits " +
         "(check with get_account). " +
         VOICE_PREFERENCE +
@@ -1748,7 +1762,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
     },
     async ({ language, style, convention, vocabulary, max_seconds, wait_seconds }) => {
       try {
-        if (!config.apiKey) return failure(MISSING_KEY_MESSAGE);
+        await client.authToken(); // fail now, before the wait, when there is no key and no sign-in
         if (!realtimeSupported()) {
           return failure("Listening needs Node 22 or newer (its built-in WebSocket). This server runs on an older Node.");
         }
@@ -1763,7 +1777,7 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
 
         const result = await listenOnce({
           baseUrl: config.baseUrl,
-          apiKey: config.apiKey,
+          apiKey: await client.authToken(),
           language,
           style,
           convention,
@@ -1977,24 +1991,131 @@ export function createServer(config: Config, client: PaxaClient, engine: SpeechE
     },
   );
 
+  // One sign-in at a time: a call while the user is still approving waits on the code already shown, and calls
+  // run in turn, so two at once cannot open two codes.
+  type SignInAttempt = { login: DeviceLogin; opened: boolean; done: Promise<void>; outcome?: StoredAuth | Error };
+  let pendingSignIn: SignInAttempt | undefined;
+  let signInTurn: Promise<unknown> = Promise.resolve();
+
+  async function signInStep(waitSeconds: number | undefined): Promise<CallToolResult> {
+    try {
+      if (config.apiKey) {
+        return text(
+          "This server uses the API key in PAXA_API_KEY, so it needs no sign-in. To sign in instead, the user " +
+            "removes PAXA_API_KEY from the server's configuration and restarts it.",
+        );
+      }
+      if (config.baseUrl !== SIGN_IN_API) {
+        return failure(
+          `A sign-in works with the Paxa API at ${SIGN_IN_API} only, and PAXA_BASE_URL is ${config.baseUrl}. ` +
+            "Set PAXA_API_KEY to a key for that API instead.",
+        );
+      }
+      if (!pendingSignIn) {
+        const current = await verifiedSignIn(() => client.me());
+        if (current) {
+          return text(
+            `Already signed in${current.email ? ` as ${current.email}` : ""}; every Paxa tool is ready. To switch ` +
+              "accounts, the user runs `npx -y @paxalabs/mcp logout` in a terminal, then you call sign_in again.",
+          );
+        }
+        const login = await startDeviceLogin();
+        const entry: SignInAttempt = { login, opened: await openInBrowser(login.url), done: Promise.resolve() };
+        entry.done = finishDeviceLogin(login, true).then(
+          (auth) => {
+            entry.outcome = auth;
+            // Approved between calls: the next call checks the stored sign-in instead of replaying this result.
+            if (pendingSignIn === entry) pendingSignIn = undefined;
+          },
+          (err: unknown) => {
+            entry.outcome = err instanceof Error ? err : new Error(String(err));
+          },
+        );
+        pendingSignIn = entry;
+        if (!entry.opened) {
+          return text(
+            `No browser opened on this machine. Ask the user to open ${login.url} and approve the request there; ` +
+              `the page shows the code ${login.userCode}. Then call sign_in again to finish (the code expires in 30 minutes).`,
+          );
+        }
+      }
+      const entry = pendingSignIn;
+      // Past the code's expiry, wait one more poll so the expiry is reported instead of "still waiting".
+      const waitMs = Math.min((waitSeconds ?? 50) * 1000, Math.max(0, entry.login.expiresAt - Date.now()) + entry.login.intervalMs + 1000);
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([entry.done, new Promise((resolve) => (timer = setTimeout(resolve, waitMs)))]);
+      clearTimeout(timer);
+      const { login, outcome } = entry;
+      if (outcome === undefined) {
+        const minutes = Math.max(1, Math.ceil((login.expiresAt - Date.now()) / 60_000));
+        return text(
+          `Still waiting for the user to approve the sign-in at ${login.url} (the page shows the code ` +
+            `${login.userCode}; it expires in ${minutes} minutes). ` +
+            (entry.opened ? "The page opened in their browser. " : "") +
+            "Call sign_in again to keep waiting.",
+        );
+      }
+      if (pendingSignIn === entry) pendingSignIn = undefined;
+      if (outcome instanceof Error) return failure(outcome);
+      return text(`Signed in${outcome.email ? ` as ${outcome.email}` : ""}. Every Paxa tool is ready, in every session on this machine.`);
+    } catch (err) {
+      return failure(err);
+    }
+  }
+
+  server.registerTool(
+    "sign_in",
+    {
+      title: "Sign in to Paxa",
+      annotations: { title: "Sign in to Paxa", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      description:
+        "Connect this machine to the user's Paxa account when no API key is configured: opens the Paxa sign-in " +
+        "page in the user's browser with a code filled in, and the user approves there (new accounts include free " +
+        "credits). Every Paxa tool then works, in every session on this machine, until the user signs out or leaves " +
+        "it unused for 30 days. Waits up to wait_seconds for the approval; if it has not come yet, call sign_in " +
+        "again to keep waiting on the same code. When no browser opens, it returns the page and the code at once for " +
+        "you to give the user. Answers at once when already signed in or when PAXA_API_KEY is set. Free.",
+      inputSchema: {
+        wait_seconds: z
+          .number()
+          .int()
+          .min(0)
+          .max(300)
+          .optional()
+          .describe(
+            "How long to wait for the approval before returning (default 50). The sign-in keeps waiting in the " +
+              "background either way, until its code expires after 30 minutes.",
+          ),
+      },
+    },
+    async ({ wait_seconds }) => {
+      const turn = signInTurn.then(() => signInStep(wait_seconds));
+      signInTurn = turn.catch(() => undefined);
+      return turn;
+    },
+  );
+
   server.registerTool(
     "get_account",
     {
       title: "Account and credits",
       annotations: { title: "Account and credits", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       description:
-        "Show the API key's account, read from the API on each call: credit balance, spending cap, plan, and " +
-        "rate limits. Call it before a large paid job, or after a call fails for credits or a rate limit; prices " +
-        "per model are in list_models. Free.",
+        "Show the account behind the API key or sign-in, read from the API on each call: credit balance, spending " +
+        "cap, plan, and rate limits. Call it before a large paid job, or after a call fails for credits or a rate " +
+        "limit; prices per model are in list_models. Free.",
       inputSchema: {},
     },
     async () => {
       try {
         const account = await client.me();
+        const email = config.apiKey ? undefined : readStoredAuth()?.email;
+        const who = account.key.key_start
+          ? `Key "${account.key.name ?? account.key.key_start}" (${account.key.key_start}...)`
+          : `Signed in${email ? ` as ${email}` : ""} through the app "${account.key.name ?? "Paxa MCP"}"`;
         return text(
           [
-            `Key "${account.key.name ?? account.key.key_start}" (${account.key.key_start}...), ` +
-              `${account.key.credits_spent} credits spent` +
+            `${who}, ${account.key.credits_spent} credits spent` +
               (account.key.credit_limit != null ? `, spending cap ${account.key.credit_limit}` : ", no spending cap") +
               ".",
             `Balance: ${account.balance.total} credits (wallet ${account.balance.wallet}, plan ${account.balance.plan}).`,

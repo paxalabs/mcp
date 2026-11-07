@@ -6,8 +6,8 @@
 [![license](https://img.shields.io/npm/l/@paxalabs/mcp)](LICENSE)
 [![Claude Desktop bundle](https://img.shields.io/github/v/release/paxalabs/mcp?include_prereleases&label=Claude%20Desktop%20.mcpb)](https://github.com/paxalabs/mcp/releases)
 
-[![Add to Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/install-mcp?name=paxa&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBwYXhhbGFicy9tY3AiXSwiZW52Ijp7IlBBWEFfQVBJX0tFWSI6InB4YV95b3VyX2tleV9oZXJlIn19)
-[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect/mcp/install?name=paxa&config=%7B%22name%22%3A%22paxa%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40paxalabs/mcp%22%5D%2C%22env%22%3A%7B%22PAXA_API_KEY%22%3A%22pxa_your_key_here%22%7D%7D)
+[![Add to Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/install-mcp?name=paxa&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBwYXhhbGFicy9tY3AiXX0%3D)
+[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect/mcp/install?name=paxa&config=%7B%22name%22%3A%22paxa%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40paxalabs/mcp%22%5D%7D)
 
 Official [MCP](https://modelcontextprotocol.io) server for the
 [Paxa Labs API](https://paxalabs.com/docs): Thai, English, and Mandarin Chinese speech AI for
@@ -26,13 +26,15 @@ and extract typed fields from documents.
 
 ## Quick start
 
-You need a Paxa API key from [paxalabs.com](https://paxalabs.com). New
-accounts include free credits.
+Add the server, then ask your agent to sign in to Paxa: your browser opens
+the Paxa sign-in page, and you approve there. New accounts include free
+credits. See [Sign in](#sign-in) for the details, or for using an API key
+instead.
 
 ### Claude Code
 
 ```bash
-claude mcp add paxa -e PAXA_API_KEY=pxa_your_key_here -- npx -y @paxalabs/mcp
+claude mcp add paxa -- npx -y @paxalabs/mcp
 ```
 
 ### Claude Desktop, Cursor, and other MCP clients
@@ -45,21 +47,43 @@ Add to your client's MCP configuration (for Claude Desktop:
   "mcpServers": {
     "paxa": {
       "command": "npx",
-      "args": ["-y", "@paxalabs/mcp"],
-      "env": {
-        "PAXA_API_KEY": "pxa_your_key_here"
-      }
+      "args": ["-y", "@paxalabs/mcp"]
     }
   }
 }
 ```
 
 **One click for Cursor or VS Code:** the buttons install the same entry
-into `~/.cursor/mcp.json` or VS Code's MCP settings. Then replace
-`pxa_your_key_here` in the `paxa` entry with your key.
+into `~/.cursor/mcp.json` or VS Code's MCP settings.
 
-[![Add to Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/install-mcp?name=paxa&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBwYXhhbGFicy9tY3AiXSwiZW52Ijp7IlBBWEFfQVBJX0tFWSI6InB4YV95b3VyX2tleV9oZXJlIn19)
-[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect/mcp/install?name=paxa&config=%7B%22name%22%3A%22paxa%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40paxalabs/mcp%22%5D%2C%22env%22%3A%7B%22PAXA_API_KEY%22%3A%22pxa_your_key_here%22%7D%7D)
+### Sign in
+
+Ask your agent to sign in to Paxa (the `sign_in` tool), or run
+`npx -y @paxalabs/mcp login` in a terminal. Your browser opens the Paxa
+sign-in page with a code filled in, and you approve there. The sign-in is
+kept in your user config folder (`~/Library/Application Support/paxa/auth.json`
+on macOS, `~/.config/paxa/auth.json` on Linux, `%APPDATA%\paxa\auth.json` on
+Windows), readable only by you, and every Paxa server and `paxa say` on the
+machine use it. It renews itself, and lasts until you sign out or leave it
+unused for 30 days.
+
+The connection is listed under API keys at
+[paxalabs.com/app/keys](https://paxalabs.com/app/keys), where you can give it
+a credit limit or disconnect it. `npx -y @paxalabs/mcp logout` signs this
+machine out.
+
+To use an API key instead, create one there and set `PAXA_API_KEY` in the
+server's configuration, for Claude Code:
+
+```bash
+claude mcp add paxa -e PAXA_API_KEY=pxa_your_key_here -- npx -y @paxalabs/mcp
+```
+
+A key, when set, is used instead of the sign-in. Keys suit CI, machines
+without a browser, and a separate spending cap per project.
+
+[![Add to Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/install-mcp?name=paxa&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBwYXhhbGFicy9tY3AiXX0%3D)
+[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect/mcp/install?name=paxa&config=%7B%22name%22%3A%22paxa%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40paxalabs/mcp%22%5D%7D)
 
 ## Tools
 
@@ -84,6 +108,7 @@ into `~/.cursor/mcp.json` or VS Code's MCP settings. Then replace
 | `transcribe_audio` | Transcribe a local recording or video (Thai, English, Mandarin, other languages, mixed; up to 120 minutes) to text, with optional speaker labels, word timings, srt or vtt subtitles, and a list of pauses to cut | 8.33 per minute |
 | `list_voices` | Your designed voices and slots, then the TTS voice roster with character notes | free |
 | `list_models` | Available models, limits, and pricing | free |
+| `sign_in` | Connect this machine to your Paxa account: opens the sign-in page in your browser for you to approve | free |
 | `get_account` | Credit balance, plan, and rate limits | free |
 
 All audio flows through one ordered queue, so sounds never overlap: `speak`
@@ -149,7 +174,8 @@ Then add to `~/.claude/settings.json`:
 ```
 
 `paxa say` takes the key from `PAXA_API_KEY`, or from the paxa entry in
-`~/.claude.json` when that is unset, so step 1 is all the setup it needs.
+`~/.claude.json` when that is unset, or else uses the sign-in on this
+machine, so step 1 is all the setup it needs.
 A `Stop` hook configured the same way speaks "Done." at the end of every
 turn.
 
@@ -306,7 +332,7 @@ through the same session.
 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
-| `PAXA_API_KEY` | yes | | Your API key. The server starts without it, but every tool that calls the API then fails with setup instructions the agent can relay |
+| `PAXA_API_KEY` | no | | An API key from [paxalabs.com/app/keys](https://paxalabs.com/app/keys). When set, it is used instead of the [sign-in](#sign-in) |
 | `PAXA_OUTPUT_DIR` | no | working directory | Where `text_to_speech` and `dialogue_to_speech` save files |
 | `PAXA_TTS_MODEL` | no | `paxa-tts-flash-v2` | Speech model for every call that does not pick one. v2 has 50 voices that each speak Thai, English, and Mandarin, and all read direction tags. `paxa-tts-flash-v1` only for regional Thai accents, the fixed emotion tags on `khanomchan` and `kaprao`, or one of the eight voices v2 does not carry |
 | `PAXA_DEFAULT_VOICE` | no | `foithong` | Voice used when a tool call does not pick one: a catalog voice from `list_voices`, or one of your designed voices (`voice_...`). On v2 every catalog voice speaks all three languages, so pick by character |
@@ -338,7 +364,8 @@ tools report it clearly and `text_to_speech` still works.
 ## Claude Desktop extension
 
 Each release on GitHub ships a `.mcpb` bundle. Download it, open it with
-Claude Desktop, and enter your API key in the extension settings. The bundle
+Claude Desktop, and ask Claude to sign in to Paxa (or enter an API key in
+the extension settings). The bundle
 carries its own copy of the server and its dependencies, so it works without
 Node.js or npm on the machine.
 

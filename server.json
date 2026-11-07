@@ -8,7 +8,7 @@
     "url": "https://github.com/paxalabs/mcp",
     "source": "github"
   },
-  "version": "0.1.0-beta.18",
+  "version": "0.1.0-beta.19",
   "icons": [
     {
       "src": "https://raw.githubusercontent.com/paxalabs/mcp/main/assets/icon.png",
@@ -21,7 +21,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@paxalabs/mcp",
-      "version": "0.1.0-beta.18",
+      "version": "0.1.0-beta.19",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
@@ -29,8 +29,8 @@
       "environmentVariables": [
         {
           "name": "PAXA_API_KEY",
-          "description": "Paxa Labs API key, created at https://paxalabs.com/app/keys",
-          "isRequired": true,
+          "description": "Paxa Labs API key from https://paxalabs.com/app/keys. Optional: without it, the sign_in tool connects your Paxa account through the browser",
+          "isRequired": false,
           "isSecret": true,
           "format": "string"
         },

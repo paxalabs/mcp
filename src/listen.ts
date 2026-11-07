@@ -10,6 +10,7 @@ import { startRecording, noRecorderMessage, SAMPLE_RATE, type Recording } from "
 
 export interface ListenOptions {
   baseUrl: string;
+  /** An API key, or a signed-in access token: the socket checks it once, when it opens. */
   apiKey: string;
   language?: string;
   style?: "verbatim" | "clean";

@@ -68,7 +68,8 @@ const manifest = {
     "aloud as a managed queue with pause, resume, skip, and clear, save speech as mp3, opus, wav, or raw pcm files, " +
     "including conversations with a voice per line, " +
     "transcribe recordings into text and subtitles, translate between 15 languages, read PDFs and images with OCR, and extract typed fields from documents.\n\n" +
-    "Requires a Paxa API key from https://paxalabs.com/app/keys (new accounts include free credits). " +
+    "Sign in with your Paxa account: ask Claude to sign in to Paxa and approve in the browser page that opens " +
+    "(new accounts include free credits). An API key from https://paxalabs.com/app/keys in the settings works instead. " +
     "Paid tools spend account credits; every tool description states its price. " +
     "Docs: https://paxalabs.com/docs",
   author: { name: "Paxa Labs", url: "https://github.com/paxalabs" },
@@ -104,13 +105,18 @@ const manifest = {
     platforms: ["darwin", "win32", "linux"],
     runtimes: { node: ">=20" },
   },
+  // Every optional field needs a default: mcpb leaves ${user_config.x} with no value and no default in place as
+  // literal text, which the server would read as a key, a microphone, a vocabulary term, or a file path.
   user_config: {
     api_key: {
       type: "string",
       title: "Paxa API key",
-      description: "Create one at https://paxalabs.com/app/keys. New accounts include free credits.",
+      description:
+        "Optional. Leave empty to sign in with your Paxa account instead (ask Claude to sign in to Paxa). " +
+        "Or create a key at https://paxalabs.com/app/keys.",
       sensitive: true,
-      required: true,
+      required: false,
+      default: "",
     },
     output_dir: {
       type: "directory",
@@ -140,12 +146,14 @@ const manifest = {
       title: "Default speaking rate",
       description: "0.5 to 1.5, as a multiplier on each voice's design speed. Leave empty for 1. 1.2 to 1.3 suits long reads.",
       required: false,
+      default: "",
     },
     mic: {
       type: "string",
       title: "Microphone device",
       description: "Device name for the listen tool. Leave empty for the system default.",
       required: false,
+      default: "",
     },
     vocabulary: {
       type: "string",
@@ -153,12 +161,14 @@ const manifest = {
       description:
         "Comma-separated names and terms that transcribe_audio should always recognize as written, such as product names.",
       required: false,
+      default: "",
     },
     vocabulary_file: {
       type: "file",
       title: "Vocabulary file",
       description: "A text file with one term per line (lines starting with # are comments), pinned on every transcription.",
       required: false,
+      default: "",
     },
   },
 };

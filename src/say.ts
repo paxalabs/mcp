@@ -7,7 +7,8 @@
 //   Claude Code hook (stdin is the hook JSON) speak a phrase chosen by event type
 //
 // The key comes from PAXA_API_KEY, or, when that is unset, from the paxa
-// server entry in ~/.claude.json so Claude Code users need no extra setup.
+// server entry in ~/.claude.json so Claude Code users need no extra setup;
+// with neither, the sign-in on this machine (`paxa login`) is used.
 // In hook mode the exit code is always 0: a failed notification must never
 // block Claude Code.
 //
@@ -22,6 +23,7 @@ import { homedir } from "node:os";
 import { dirname, extname, join } from "node:path";
 
 import { PaxaClient } from "./api.js";
+import { Credentials, readStoredAuth } from "./auth.js";
 import { MISSING_KEY_MESSAGE, defaultVoiceWarning, loadConfig } from "./config.js";
 import { playbackFormat, playClip } from "./player.js";
 import { SpeechEngine } from "./queue.js";
@@ -197,10 +199,10 @@ export async function runSay(args: string[]): Promise<void> {
   const cache = cacheAs ? phraseCachePath(cacheAs, text, chosenVoice, config.ttsModel) : undefined;
   if (cache && existsSync(cache) && (await replayPhrase(cache))) return;
 
-  const apiKey = config.apiKey ?? keyFromClaudeConfig();
-  if (!apiKey) fail(MISSING_KEY_MESSAGE);
+  const credentials = new Credentials(config.apiKey ?? keyFromClaudeConfig());
+  if (!credentials.apiKey && !readStoredAuth()) fail(MISSING_KEY_MESSAGE);
 
-  const client = new PaxaClient(config.baseUrl, apiKey as string);
+  const client = new PaxaClient(config.baseUrl, credentials);
   const engine = new SpeechEngine({
     buffered: (t, v, format, options) => client.tts({ text: t, voice: v, format, ...options }),
     stream: (t, v, signal, options) => client.ttsStream({ text: t, voice: v, format: "mp3", ...options }, signal),

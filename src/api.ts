@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
-import { DEFAULT_TTS_MODEL, MISSING_KEY_MESSAGE, type TtsModel } from "./config.js";
+import type { Credentials } from "./auth.js";
+import { DEFAULT_TTS_MODEL, type TtsModel } from "./config.js";
 
 /** Used when a request names no model. Prefer passing the configured model explicitly. */
 export const TTS_MODEL: TtsModel = DEFAULT_TTS_MODEL;
@@ -39,8 +40,9 @@ const KEYS_URL = "https://paxalabs.com/app/keys";
 /** What the agent should do, or tell the user, for each stable error code from the API. */
 const HINTS: Record<string, string> = {
   unauthorized:
-    "The API key was rejected (missing, invalid, or disabled). Ask the user to check PAXA_API_KEY " +
-    `in their MCP client config (keys are managed at ${KEYS_URL}) and restart the server.`,
+    "The API key or sign-in was rejected (invalid, disabled, or the app was disconnected). When PAXA_API_KEY is " +
+    `set, ask the user to check it in their MCP client config (keys are managed at ${KEYS_URL}) and restart the ` +
+    "server; otherwise call sign_in to connect again.",
   insufficient_credits:
     "The account is out of credits; nothing was charged. Ask the user to top up or upgrade at " +
     "https://paxalabs.com, then retry.",
@@ -524,7 +526,8 @@ export interface AccountInfo {
   key: {
     id: string;
     name: string | null;
-    key_start: string;
+    /** null for an app connected through Sign in with Paxa, whose key has no secret to show. */
+    key_start: string | null;
     credit_limit: number | null;
     credits_spent: number;
     created_at: string;
@@ -549,8 +552,13 @@ function eitherSignal(a: AbortSignal | undefined, b: AbortSignal): AbortSignal {
 export class PaxaClient {
   constructor(
     private readonly baseUrl: string,
-    private readonly apiKey: string | undefined,
+    private readonly credentials: Credentials,
   ) {}
+
+  /** The bearer the next request will carry, for connections made outside fetch (the live WebSocket). */
+  authToken(): Promise<string> {
+    return this.credentials.token();
+  }
 
   private async request(
     path: string,
@@ -563,28 +571,39 @@ export class PaxaClient {
       signal?: AbortSignal;
     } = {},
   ): Promise<Response> {
-    if (!this.apiKey) throw new Error(MISSING_KEY_MESSAGE);
-    const headers: Record<string, string> = {
-      authorization: `Bearer ${this.apiKey}`,
-    };
+    const headers: Record<string, string> = {};
     const multipart = init.body instanceof FormData;
     if (init.body !== undefined && !multipart) headers["content-type"] = "application/json";
     if (init.idempotent) headers["idempotency-key"] = randomUUID();
+    const body = init.body === undefined ? undefined : multipart ? (init.body as FormData) : JSON.stringify(init.body);
+    const send = async (token: string): Promise<Response> => {
+      try {
+        return await fetch(this.baseUrl + path, {
+          method: init.method ?? "GET",
+          headers: { ...headers, authorization: `Bearer ${token}` },
+          body,
+          signal: eitherSignal(init.signal, AbortSignal.timeout(init.timeoutMs ?? 60_000)),
+        });
+      } catch (err) {
+        const cause = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `Could not reach the Paxa API at ${this.baseUrl}: ${cause}. Check this machine's internet ` +
+            "connection, and PAXA_BASE_URL if it is set (the default is https://api.paxalabs.com).",
+        );
+      }
+    };
 
-    let res: Response;
-    try {
-      res = await fetch(this.baseUrl + path, {
-        method: init.method ?? "GET",
-        headers,
-        body: init.body === undefined ? undefined : multipart ? (init.body as FormData) : JSON.stringify(init.body),
-        signal: eitherSignal(init.signal, AbortSignal.timeout(init.timeoutMs ?? 60_000)),
-      });
-    } catch (err) {
-      const cause = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `Could not reach the Paxa API at ${this.baseUrl}: ${cause}. Check this machine's internet ` +
-          "connection, and PAXA_BASE_URL if it is set (the default is https://api.paxalabs.com).",
-      );
+    const token = await this.credentials.token();
+    let res = await send(token);
+    // A signed-in token can be refused before it expires: connecting the app again on another machine retires the
+    // tokens issued before, and so does a rotation of the API's signing keys. Nothing is charged on a 401, so
+    // renew once and resend.
+    if (res.status === 401) {
+      const renewed = await this.credentials.renew(token);
+      if (renewed) {
+        await res.body?.cancel().catch(() => undefined);
+        res = await send(renewed);
+      }
     }
 
     if (!res.ok) {
