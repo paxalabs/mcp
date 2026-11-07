@@ -56,6 +56,9 @@ Add to your client's MCP configuration (for Claude Desktop:
 **One click for Cursor or VS Code:** the buttons install the same entry
 into `~/.cursor/mcp.json` or VS Code's MCP settings.
 
+[![Add to Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/install-mcp?name=paxa&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBwYXhhbGFicy9tY3AiXX0%3D)
+[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect/mcp/install?name=paxa&config=%7B%22name%22%3A%22paxa%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40paxalabs/mcp%22%5D%7D)
+
 ### Sign in
 
 Ask your agent to sign in to Paxa (the `sign_in` tool), or run
@@ -81,9 +84,6 @@ claude mcp add paxa -e PAXA_API_KEY=pxa_your_key_here -- npx -y @paxalabs/mcp
 
 A key, when set, is used instead of the sign-in. Keys suit CI, machines
 without a browser, and a separate spending cap per project.
-
-[![Add to Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/install-mcp?name=paxa&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBwYXhhbGFicy9tY3AiXX0%3D)
-[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect/mcp/install?name=paxa&config=%7B%22name%22%3A%22paxa%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40paxalabs/mcp%22%5D%7D)
 
 ## Tools
 
